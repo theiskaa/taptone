@@ -18,7 +18,7 @@ open .build/Taptone.app
 
 **Show Activity** opens an optional dashboard with the audio level, 12 seconds of signal history, and counts for detected beats and trackpad requests. The two counts are separate because macOS doesn’t report whether a tap was felt. **Preview Demo** lets you see the dashboard with synthetic input, without capture permission or haptics. Opening or closing Activity doesn’t start or stop the live session. The dashboard keeps only a small amount of signal metadata in memory and clears it when you start a new session.
 
-This is a development build, not a release. The app requests fixed AppKit taps. They were felt but reported too weak on the tested Mac, and background delivery and alignment with music are not qualified. The separate command-line probe delivered stronger bass taps on that Mac; it is not built into the app. Magic Trackpad and Intel compatibility are unverified. The build script uses ad hoc signing by default; set `TAPTONE_SIGN_IDENTITY` to use a locally available signing identity.
+This is a development build, not a release. The app requests fixed AppKit taps. They were felt but reported too weak on the tested Mac, and background delivery and alignment with music are not qualified. A local hardware experiment delivered stronger bass taps on that Mac; it is not included in this repo or the app. Magic Trackpad and Intel compatibility are unverified. The build script uses ad hoc signing by default; set `TAPTONE_SIGN_IDENTITY` to use a locally available signing identity.
 
 Taptone starts off. It only captures while listening; it uses no microphone or screen images and never saves or uploads audio. Stop, output changes, sleep/session inactivity, and Quit invalidate pending cues. The app does not use `nospeaker`’s private APIs.
 
@@ -32,13 +32,11 @@ Taptone starts off. It only captures while listening; it uses no microphone or s
 | `Sources/TaptoneAudio` | Core Audio tap, capture lifecycle, and beat processing |
 | `Sources/Taptone` | AppKit menu bar, SwiftUI Activity window, and session-bound trackpad taps |
 | `Sources/TaptoneFixtures` | Generated audio, reference onsets, and offline detector scoring |
-| `experiments/trackpad-probe` | Standalone diagnostic with private actuator access; not linked into the app |
 
 ## Repeatable beat test
 
 Run `swift run -c release TaptoneFixtures` from the repo. It writes generated WAVs, known onset labels, and `metrics.csv` under `.build/fixtures/`. Play `kick-120.wav` to check live capture against a steady kick pattern. The CSV scores the detector offline; it doesn’t measure trackpad strength or playback-to-touch latency.
 
-- [Standalone physical trackpad probe](experiments/trackpad-probe/README.md) (local experiment, not part of the app)
 - [Interface research and design](docs/interface.md)
 - [Technical research and MVP decision](docs/research.md)
 - [Hardware feasibility test](docs/feasibility.md)
