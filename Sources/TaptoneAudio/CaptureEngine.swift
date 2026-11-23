@@ -4,6 +4,23 @@ import os
 import OSLog
 import TaptoneCore
 
+/// An owned copy made on the capture worker, never on the HAL callback.
+public struct CapturePCM: Sendable {
+    public let stereo: [Float]
+    public let sampleRate: Double
+    /// Timestamp of the packet start in the Core Audio host clock, not speaker output time.
+    public let hostTimeNs: UInt64
+    /// First delivered packet after a gap, stale-buffer discard, or mailbox overrun.
+    public let discontinuity: Bool
+
+    public init(stereo: [Float], sampleRate: Double, hostTimeNs: UInt64, discontinuity: Bool) {
+        self.stereo = stereo
+        self.sampleRate = sampleRate
+        self.hostTimeNs = hostTimeNs
+        self.discontinuity = discontinuity
+    }
+}
+
 /// Use a fresh ID for each start and keep callbacks short. All HAL and detector work lives on one serial queue.
 /// Call `shutdown` before discarding an engine that has started capture; releasing the engine is not shutdown.
 public final class CaptureEngine: @unchecked Sendable {
@@ -16,6 +33,9 @@ public final class CaptureEngine: @unchecked Sendable {
     }
 
     public typealias Report = @Sendable (Event) -> Void
+    /// Optional system-capture sink called on the capture worker. Keep it bounded and never block on output I/O.
+    /// An in-flight callback may finish after Stop; use `shutdown(then:)` to wait for teardown.
+    public typealias ConsumePCM = @Sendable (CapturePCM) -> Void
 
     struct Timeouts {
         var firstBufferNs: UInt64 = 12_000_000_000
@@ -42,12 +62,13 @@ public final class CaptureEngine: @unchecked Sendable {
         self.makeTap = makeTap
     }
 
-    public func start(id: UUID, source: Source, sensitivity: BeatDetector.Sensitivity, report: @escaping Report) {
+    public func start(id: UUID, source: Source, sensitivity: BeatDetector.Sensitivity,
+                      consumePCM: ConsumePCM? = nil, report: @escaping Report) {
         enqueue(updating: { $0 = id }) { [self] in
             guard isRequested(id) else { return }
             end()
             guard isRequested(id) else { return }
-            let next = Session(id: id, sensitivity: sensitivity, report: report)
+            let next = Session(id: id, sensitivity: sensitivity, consumePCM: consumePCM, report: report)
             session = next
             do {
                 if source == .system {
@@ -120,7 +141,7 @@ public final class CaptureEngine: @unchecked Sendable {
         let now = Self.now()
         if let tap = session.tap {
             let awaitingFirst = session.lastBufferAt == nil
-            session.drain(tap.mailbox, now: now)
+            session.drain(tap.mailbox, now: now, isCurrent: { isRequested(id) })
             if diagnostics, awaitingFirst, session.lastBufferAt != nil {
                 let startupMs = Double(now - session.startedAt) / 1_000_000
                 log.info("First PCM buffer arrived \(startupMs, format: .fixed(precision: 1), privacy: .public) ms after tap startup")
@@ -173,6 +194,8 @@ extension SystemAudioTap: CaptureTap {}
 private final class Session {
     let id: UUID
     let report: CaptureEngine.Report
+    private let consumePCM: CaptureEngine.ConsumePCM?
+    private var missingPCM = false
     var sensitivity: BeatDetector.Sensitivity
     var tap: (any CaptureTap)?
     var demo: DemoBeat?
@@ -188,9 +211,11 @@ private final class Session {
     private var lastUpdate: UInt64?
     private var generatedFrames = 0
 
-    init(id: UUID, sensitivity: BeatDetector.Sensitivity, report: @escaping CaptureEngine.Report) {
+    init(id: UUID, sensitivity: BeatDetector.Sensitivity, consumePCM: CaptureEngine.ConsumePCM?,
+         report: @escaping CaptureEngine.Report) {
         self.id = id
         self.sensitivity = sensitivity
+        self.consumePCM = consumePCM
         self.report = report
     }
 
@@ -207,25 +232,37 @@ private final class Session {
         level = -90
     }
 
-    func drain(_ mailbox: TapMailbox, now: UInt64) {
+    func drain(_ mailbox: TapMailbox, now: UInt64, isCurrent: () -> Bool) {
         var packet = TTAudioPacket()
         for _ in 0..<TTMailboxSlots {
-            guard tt_mailbox_peek(mailbox.storage, &packet) else { break }
-            defer { tt_mailbox_consume(mailbox.storage) }
-            guard let stereo = packet.stereo else { continue }
-            lastBufferAt = now
-            let end = packet.hostTimeNs + UInt64(Double(packet.frames) * nsPerFrame)
-            guard end >= now || now - end < PulseTiming.maximumAge else {
-                resetDetector()
-                continue
-            }
-            if packet.discontinuity { resetDetector() }
-            for frame in 0..<Int(packet.frames) {
-                if let reading = detector?.push(left: stereo[2 * frame], right: stereo[2 * frame + 1]) {
-                    record(reading, at: packet.hostTimeNs + UInt64(Double(frame) * nsPerFrame))
-                }
+            guard isCurrent(), tt_mailbox_peek(mailbox.storage, &packet) else { break }
+            let owned = process(packet, now: now)
+            tt_mailbox_consume(mailbox.storage)
+            // Release the slot before calling downstream code; the owned buffer can outlive its slot.
+            if let owned, isCurrent() { consumePCM?(owned) }
+        }
+    }
+
+    private func process(_ packet: TTAudioPacket, now: UInt64) -> CapturePCM? {
+        guard let stereo = packet.stereo else { return nil }
+        lastBufferAt = now
+        let end = packet.hostTimeNs + UInt64(Double(packet.frames) * nsPerFrame)
+        guard end >= now || now - end < PulseTiming.maximumAge else {
+            resetDetector()
+            missingPCM = true
+            return nil
+        }
+        if packet.discontinuity { resetDetector() }
+        for frame in 0..<Int(packet.frames) {
+            if let reading = detector?.push(left: stereo[2 * frame], right: stereo[2 * frame + 1]) {
+                record(reading, at: packet.hostTimeNs + UInt64(Double(frame) * nsPerFrame))
             }
         }
+        guard consumePCM != nil else { return nil }
+        let samples = Array(UnsafeBufferPointer(start: stereo, count: 2 * Int(packet.frames)))
+        let gap = packet.discontinuity || missingPCM
+        missingPCM = false
+        return CapturePCM(stereo: samples, sampleRate: sampleRate, hostTimeNs: packet.hostTimeNs, discontinuity: gap)
     }
 
     func generateDemo(now: UInt64) {

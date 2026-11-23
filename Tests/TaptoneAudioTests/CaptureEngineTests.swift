@@ -207,6 +207,57 @@ import Testing
         }
     }
 
+    @Test func ownedPCMRemainsReadableAfterStopAndQueuedPacketsAreDiscarded() {
+        let first = DispatchSemaphore(value: 0)
+        let shutdown = DispatchSemaphore(value: 0)
+        let packets = OSAllocatedUnfairLock<[CapturePCM]>(initialState: [])
+        let id = UUID()
+        let engine = CaptureEngine {
+            try TestTap(start: { mailbox in
+                writeSilence(to: mailbox)
+                writeSilence(to: mailbox)
+            })
+        }
+        engine.start(id: id, source: .system, sensitivity: .normal, consumePCM: { packet in
+            packets.withLock { $0.append(packet) }
+            engine.stop(id: id)
+            first.signal()
+        }, report: { _ in })
+        #expect(first.wait(timeout: .now() + .seconds(1)) == .success)
+        engine.shutdown { _ in shutdown.signal() }
+        #expect(shutdown.wait(timeout: .now() + .seconds(1)) == .success)
+        let observed = packets.withLock { $0 }
+        #expect(observed.count == 1)
+        #expect(observed.first?.sampleRate == 48_000)
+        #expect(observed.first?.stereo == [Float](repeating: 0, count: 1_024))
+        #expect(observed.first?.discontinuity == false)
+    }
+
+    @Test func stalePCMIsDiscardedAndOnlyTheNextPacketStartsANewSegment() {
+        let complete = DispatchSemaphore(value: 0)
+        let stopped = DispatchSemaphore(value: 0)
+        let packets = OSAllocatedUnfairLock<[CapturePCM]>(initialState: [])
+        let engine = CaptureEngine {
+            try TestTap(start: { mailbox in
+                let now = CaptureEngine.now()
+                writeSilence(to: mailbox, at: now > 1_000_000_000 ? now - 1_000_000_000 : 0)
+                writeSilence(to: mailbox, at: now)
+                writeSilence(to: mailbox, at: now + 11_000_000)
+            })
+        }
+        engine.start(id: UUID(), source: .system, sensitivity: .normal, consumePCM: { packet in
+            if packets.withLock({ $0.append(packet); return $0.count == 2 }) { complete.signal() }
+        }, report: { _ in })
+        #expect(complete.wait(timeout: .now() + .seconds(1)) == .success)
+        engine.shutdown { _ in stopped.signal() }
+        #expect(stopped.wait(timeout: .now() + .seconds(1)) == .success)
+        let observed = packets.withLock { $0 }
+        #expect(observed.map(\.discontinuity) == [true, false])
+        if observed.count == 2 {
+            #expect(observed[1].hostTimeNs == observed[0].hostTimeNs + 11_000_000)
+        }
+    }
+
     @Test func demoSessionReportsBeatsAndSurvivesAnUnrelatedStop() async throws {
         let engine = CaptureEngine()
         let id = UUID()
@@ -240,13 +291,13 @@ import Testing
     }
 }
 
-private func writeSilence(to mailbox: TapMailbox) {
+private func writeSilence(to mailbox: TapMailbox, at hostTimeNs: UInt64 = CaptureEngine.now()) {
     var samples = [Float](repeating: 0, count: 512)
     samples.withUnsafeMutableBytes { samples in
         var buffer = AudioBufferList(mNumberBuffers: 1, mBuffers: AudioBuffer(
             mNumberChannels: 1, mDataByteSize: UInt32(samples.count), mData: samples.baseAddress
         ))
-        mailbox.write(&buffer, hostTimeNs: CaptureEngine.now())
+        mailbox.write(&buffer, hostTimeNs: hostTimeNs)
     }
 }
 
