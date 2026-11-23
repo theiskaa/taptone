@@ -2,6 +2,8 @@
 .swiftpm/
 .DS_Store
 
-# Local-only hardware experiments.
+# Local research, plans, and hardware experiments.
+/docs/
+/plans/
 /experiments/
 /scripts/build-trackpad-probe.sh

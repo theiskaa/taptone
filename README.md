@@ -36,8 +36,3 @@ Taptone starts off. It only captures while listening; it uses no microphone or s
 ## Repeatable beat test
 
 Run `swift run -c release TaptoneFixtures` from the repo. It writes generated WAVs, known onset labels, and `metrics.csv` under `.build/fixtures/`. Play `kick-120.wav` to check live capture against a steady kick pattern. The CSV scores the detector offline; it doesn’t measure trackpad strength or playback-to-touch latency.
-
-- [Interface research and design](docs/interface.md)
-- [Technical research and MVP decision](docs/research.md)
-- [Hardware feasibility test](docs/feasibility.md)
-- [Implementation status and next steps](plans/README.md)
