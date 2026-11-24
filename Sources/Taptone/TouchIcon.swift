@@ -1,51 +1,66 @@
 import AppKit
 
+/// The status item: a trackpad with the sound on it, as in the app icon. While bass plays, the wave
+/// grows with the bass level in four steps; it never flashes on kicks.
 @MainActor
 enum TouchIcon {
-    static func image(listening: Bool) -> NSImage {
-        let image = NSImage(size: NSSize(width: 16, height: 16), flipped: true) { _ in
-            NSColor.black.setStroke()
-            let finger = NSBezierPath()
-            finger.lineCapStyle = .round
-            finger.lineJoinStyle = .round
-            finger.lineWidth = 1.3
-            finger.move(to: CGPoint(x: 5.4, y: 13.75))
-            finger.line(to: CGPoint(x: 2.9, y: 10.35))
-            finger.curve(
-                to: CGPoint(x: 4.2, y: 8.9),
-                controlPoint1: CGPoint(x: 2.1, y: 9.25),
-                controlPoint2: CGPoint(x: 3.35, y: 8.15)
-            )
-            finger.line(to: CGPoint(x: 5.9, y: 10.25))
-            finger.line(to: CGPoint(x: 5.9, y: 4.65))
-            finger.curve(
-                to: CGPoint(x: 8.4, y: 4.65),
-                controlPoint1: CGPoint(x: 5.9, y: 2.98),
-                controlPoint2: CGPoint(x: 8.4, y: 2.98)
-            )
-            finger.line(to: CGPoint(x: 8.4, y: 7.05))
-            finger.line(to: CGPoint(x: 10.85, y: 7.05))
-            finger.curve(
-                to: CGPoint(x: 12.95, y: 9.2),
-                controlPoint1: CGPoint(x: 12.25, y: 7.05),
-                controlPoint2: CGPoint(x: 13.1, y: 7.9)
-            )
-            finger.line(to: CGPoint(x: 12.45, y: 13.75))
-            finger.stroke()
+    enum State: Hashable {
+        case off, connecting, waiting, listening(step: Int), taps, demo, failed
+    }
 
-            if listening {
-                let marks = NSBezierPath()
-                marks.lineCapStyle = .round
-                marks.lineWidth = 1.15
-                marks.move(to: CGPoint(x: 3.95, y: 2.65))
-                marks.line(to: CGPoint(x: 3.15, y: 1.55))
-                marks.move(to: CGPoint(x: 10.35, y: 2.65))
-                marks.line(to: CGPoint(x: 11.15, y: 1.55))
-                marks.stroke()
+    private static let amplitudes = [1.1, 1.7, 2.3, 2.9]
+    private static var cache: [State: NSImage] = [:]
+
+    static func image(_ state: State) -> NSImage {
+        if let image = cache[state] { return image }
+        let image = NSImage(size: NSSize(width: 18, height: 16), flipped: true) { _ in
+            NSColor.black.setStroke()
+            NSColor.black.setFill()
+            let pad = NSBezierPath(roundedRect: NSRect(x: 1.5, y: 2.5, width: 15, height: 11), xRadius: 3, yRadius: 3)
+            pad.lineWidth = 1.2
+            pad.stroke()
+            switch state {
+            case .off: line(dashed: false, alpha: 0.5)
+            case .connecting: line(dashed: true, alpha: 1)
+            case .waiting: line(dashed: false, alpha: 1)
+            case .taps: wave(amplitudes[0])
+            case .listening(let step): wave(amplitudes[min(3, max(0, step))])
+            case .demo:
+                NSColor.black.withAlphaComponent(0.45).setStroke()
+                wave(amplitudes[1])
+            case .failed:
+                let mark = NSBezierPath()
+                mark.move(to: NSPoint(x: 9, y: 5))
+                mark.line(to: NSPoint(x: 9, y: 8.6))
+                mark.lineWidth = 1.5
+                mark.lineCapStyle = .round
+                mark.stroke()
+                NSBezierPath(ovalIn: NSRect(x: 8.2, y: 10, width: 1.6, height: 1.6)).fill()
             }
             return true
         }
         image.isTemplate = true
+        cache[state] = image
         return image
+    }
+
+    private static let lane = (from: 4.5, to: 13.5, y: 8.0)
+
+    private static func wave(_ amplitude: Double) {
+        let path = SoundWave(amplitude: amplitude, cycles: 2)
+            .bezierPath(in: CGRect(x: lane.from, y: lane.y, width: lane.to - lane.from, height: 0), steps: 32)
+        path.lineWidth = 1.3
+        path.stroke()
+    }
+
+    private static func line(dashed: Bool, alpha: Double) {
+        NSColor.black.withAlphaComponent(alpha).setStroke()
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: lane.from, y: lane.y))
+        path.line(to: NSPoint(x: lane.to, y: lane.y))
+        path.lineWidth = 1.3
+        path.lineCapStyle = .round
+        if dashed { path.setLineDash([1.5, 2], count: 2, phase: 0) }
+        path.stroke()
     }
 }

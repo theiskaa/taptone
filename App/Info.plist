@@ -8,6 +8,8 @@
     <string>Taptone</string>
     <key>CFBundleExecutable</key>
     <string>Taptone</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.theiskaa.taptone</string>
     <key>CFBundleInfoDictionaryVersion</key>
@@ -20,6 +22,8 @@
     <string>0.1.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.utilities</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.2</string>
     <key>LSUIElement</key>
@@ -28,5 +32,7 @@
     <string>Taptone listens to audio already playing on your Mac to find beats. Audio stays on this Mac and is never saved.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>© 2026 theiskaa. MIT License.</string>
 </dict>
 </plist>
