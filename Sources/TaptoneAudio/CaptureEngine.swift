@@ -29,7 +29,10 @@ public final class CaptureEngine: @unchecked Sendable {
     public enum Event: Sendable {
         /// A beat timestamp is in the Core Audio host clock, not an estimate of when it was heard.
         case signal(levelDBFS: Float, beatTimeNs: UInt64?)
-        case failed(String)
+        /// Capture ended for a reason a fresh start usually fixes, like a new audio output.
+        case interrupted(String)
+        /// `needsAccess`: allowing system audio recording would likely fix it.
+        case failed(String, needsAccess: Bool)
     }
 
     public typealias Report = @Sendable (Event) -> Void
@@ -37,10 +40,20 @@ public final class CaptureEngine: @unchecked Sendable {
     /// An in-flight callback may finish after Stop; use `shutdown(then:)` to wait for teardown.
     public typealias ConsumePCM = @Sendable (CapturePCM) -> Void
 
+    /// The tap only delivers audio while the output is playing, so a quiet stream is only a problem
+    /// when the output is playing. These limits count from when that was first seen.
     struct Timeouts {
         var firstBufferNs: UInt64 = 12_000_000_000
         var stalledStreamNs: UInt64 = 5_000_000_000
+        var outputCheckNs: UInt64 = 250_000_000
+        /// Buffers arrive every ~10 ms while audio flows; a longer gap means none is arriving.
+        var receivingNs: UInt64 = 100_000_000
     }
+
+    /// How often to drain the mailbox: briskly while audio arrives, gently while none does. Eight slots
+    /// hold about 80 ms, so the slow pace can't overflow them.
+    private static let fastPace = DispatchTimeInterval.milliseconds(8)
+    private static let restingPace = DispatchTimeInterval.milliseconds(20)
 
     private let queue = DispatchQueue(label: "com.theiskaa.taptone.capture", qos: .userInitiated)
     private let requested = OSAllocatedUnfairLock<UUID?>(initialState: nil)
@@ -79,7 +92,7 @@ public final class CaptureEngine: @unchecked Sendable {
                     next.tap = tap
                     guard isRequested(id) else { end(); return }
                     try tap.prepare(queue: queue) { [weak self] in
-                        self?.fail(id, "Audio output changed. Start listening again to use the new output.")
+                        self?.fail(id, "Audio output changed.", interrupted: true)
                     }
                     guard isRequested(id) else { end(); return }
                     next.configure(sampleRate: tap.sampleRate)
@@ -92,12 +105,12 @@ public final class CaptureEngine: @unchecked Sendable {
                 guard isRequested(id) else { end(); return }
                 next.startedAt = Self.now()
                 let timer = DispatchSource.makeTimerSource(queue: queue)
-                timer.schedule(deadline: .now(), repeating: .milliseconds(8), leeway: .milliseconds(1))
+                timer.schedule(deadline: .now(), repeating: Self.fastPace, leeway: .milliseconds(1))
                 timer.setEventHandler { [weak self] in self?.tick(id) }
                 next.timer = timer
                 timer.resume()
             } catch {
-                fail(id, error.localizedDescription)
+                fail(id, error.localizedDescription, needsAccess: (error as? CaptureFailure)?.needsAccess ?? false)
             }
         }
     }
@@ -146,13 +159,32 @@ public final class CaptureEngine: @unchecked Sendable {
                 let startupMs = Double(now - session.startedAt) / 1_000_000
                 log.info("First PCM buffer arrived \(startupMs, format: .fixed(precision: 1), privacy: .public) ms after tap startup")
             }
-            let last = session.lastBufferAt ?? session.startedAt
-            let timeout = session.lastBufferAt == nil ? timeouts.firstBufferNs : timeouts.stalledStreamNs
-            if now - last >= timeout {
-                fail(id, session.lastBufferAt == nil
-                    ? "No audio data arrived. Play audio and check system audio access in Privacy & Security, then try again."
-                    : "The audio stream stopped. Start listening again when your audio output is ready.")
-                return
+            let receiving = session.lastBufferAt.map { now - $0 < timeouts.receivingNs } ?? false
+            if receiving != session.pacedFast {
+                session.pacedFast = receiving
+                session.timer?.schedule(deadline: .now(), repeating: receiving ? Self.fastPace : Self.restingPace,
+                                        leeway: .milliseconds(receiving ? 1 : 5))
+            }
+            if receiving {
+                session.playingSince = nil
+            } else if now >= session.nextOutputCheck {
+                session.nextOutputCheck = now + timeouts.outputCheckNs
+                if tap.isOutputPlaying {
+                    let since = session.playingSince ?? now
+                    session.playingSince = since
+                    let first = session.lastBufferAt == nil
+                    if now - since >= (first ? timeouts.firstBufferNs : timeouts.stalledStreamNs) {
+                        if first {
+                            fail(id, "No audio data arrived. Check system audio access in Privacy & Security, then try again.",
+                                 needsAccess: true)
+                        } else {
+                            fail(id, "The audio stream stopped.", interrupted: true)
+                        }
+                        return
+                    }
+                } else {
+                    session.playingSince = nil // Nothing is playing, so no audio is expected.
+                }
             }
         } else {
             session.generateDemo(now: now)
@@ -160,7 +192,7 @@ public final class CaptureEngine: @unchecked Sendable {
         if isRequested(id) { session.sendUpdate(now: now) }
     }
 
-    private func fail(_ id: UUID, _ message: String) {
+    private func fail(_ id: UUID, _ message: String, interrupted: Bool = false, needsAccess: Bool = false) {
         guard let session, session.id == id else { return }
         // Invalidate consumers' pending cues before HAL teardown, which can block.
         defer { end() }
@@ -170,7 +202,7 @@ public final class CaptureEngine: @unchecked Sendable {
             return true
         }
         if diagnostics { log.info("Capture stopped: \(message, privacy: .public)") }
-        if shouldReport { session.report(.failed(message)) }
+        if shouldReport { session.report(interrupted ? .interrupted(message) : .failed(message, needsAccess: needsAccess)) }
     }
 
     private func end() {
@@ -184,6 +216,8 @@ public final class CaptureEngine: @unchecked Sendable {
 protocol CaptureTap: AnyObject {
     var mailbox: TapMailbox { get }
     var sampleRate: Double { get }
+    /// Whether another app is playing audio right now, on any device.
+    var isOutputPlaying: Bool { get }
     func prepare(queue: DispatchQueue, onRouteChange: @escaping @Sendable () -> Void) throws
     func start() throws
     func stop() -> [CaptureCleanupIssue]
@@ -203,6 +237,10 @@ private final class Session {
     var timer: DispatchSourceTimer?
     var startedAt: UInt64 = 0
     var lastBufferAt: UInt64?
+    /// When the output was first seen playing while no audio arrived.
+    var playingSince: UInt64?
+    var nextOutputCheck: UInt64 = 0
+    var pacedFast = true
 
     private var sampleRate = 0.0
     private var nsPerFrame = 0.0
@@ -258,10 +296,10 @@ private final class Session {
                 record(reading, at: packet.hostTimeNs + UInt64(Double(frame) * nsPerFrame))
             }
         }
-        guard consumePCM != nil else { return nil }
-        let samples = Array(UnsafeBufferPointer(start: stereo, count: 2 * Int(packet.frames)))
         let gap = packet.discontinuity || missingPCM
         missingPCM = false
+        guard consumePCM != nil else { return nil }
+        let samples = Array(UnsafeBufferPointer(start: stereo, count: 2 * Int(packet.frames)))
         return CapturePCM(stereo: samples, sampleRate: sampleRate, hostTimeNs: packet.hostTimeNs, discontinuity: gap)
     }
 
@@ -289,8 +327,8 @@ private final class Session {
         if reading.isBeat { beat = time }
     }
 
+    /// Reports silence too, while waiting for audio, so the app can show that it's listening.
     func sendUpdate(now: UInt64) {
-        guard lastBufferAt != nil else { return }
         if let beat, !PulseTiming.isFresh(beat, at: now) { self.beat = nil }
         guard beat != nil || lastUpdate.map({ now - $0 >= 150_000_000 }) ?? true else { return }
         report(.signal(levelDBFS: level, beatTimeNs: beat))

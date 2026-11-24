@@ -5,7 +5,7 @@ import os
 import Testing
 
 @Suite struct CaptureEngineTests {
-    @Test func outputChangeReportsFailureBeforeBlockedTapTeardown() {
+    @Test func outputChangeReportsAnInterruptionBeforeBlockedTapTeardown() {
         let reachedStop = DispatchSemaphore(value: 0)
         let allowStop = DispatchSemaphore(value: 0)
         let receivedFailure = DispatchSemaphore(value: 0)
@@ -17,7 +17,7 @@ import Testing
             })
         }
         engine.start(id: UUID(), source: .system, sensitivity: .normal) { event in
-            if case .failed(let message) = event, message.contains("output changed") {
+            if case .interrupted(let message) = event, message.contains("output changed") {
                 receivedFailure.signal()
             }
         }
@@ -58,7 +58,10 @@ import Testing
         let newBeat = DispatchSemaphore(value: 0)
         engine.start(id: UUID(), source: .demo, sensitivity: .normal) { event in
             if case .signal(_, .some) = event { newBeat.signal() }
-            if case .failed = event { actions.withLock { $0.append("new session failed") } }
+            switch event {
+            case .failed, .interrupted: actions.withLock { $0.append("new session failed") }
+            case .signal: break
+            }
         }
         oldRoute.withLock { $0 }?()
         allowPrepare.signal()
@@ -152,7 +155,7 @@ import Testing
         let errors = OSAllocatedUnfairLock<[String]>(initialState: [])
         let report = DispatchSemaphore(value: 0)
         let onEvent: CaptureEngine.Report = { event in
-            if case .failed(let message) = event {
+            if case .failed(let message, _) = event {
                 errors.withLock { $0.append(message) }
                 report.signal()
             }
@@ -174,36 +177,43 @@ import Testing
         #expect(issues.withLock { $0 } == [issue])
     }
 
-    @Test(arguments: [false, true])
-    func distinguishesNoPCMFromSilenceThenAStalledStream(sendsSilentPCM: Bool) {
-        let engine = CaptureEngine(timeouts: .init(firstBufferNs: 20_000_000, stalledStreamNs: 40_000_000)) {
-            try TestTap(start: { mailbox in
+    /// The tap delivers nothing while the output is idle, so missing audio is only a failure while
+    /// something is playing. A stream that stops mid-session is an interruption the app recovers from.
+    @Test(arguments: [(false, false), (true, false), (false, true), (true, true)])
+    func missingAudioFailsOnlyWhileTheOutputPlays(sendsSilentPCM: Bool, outputPlaying: Bool) {
+        let engine = CaptureEngine(timeouts: .init(firstBufferNs: 20_000_000, stalledStreamNs: 40_000_000,
+                                                   outputCheckNs: 1_000_000)) {
+            try TestTap(outputPlaying: outputPlaying, start: { mailbox in
                 if sendsSilentPCM { writeSilence(to: mailbox) }
             })
         }
         let reports = OSAllocatedUnfairLock<[String]>(initialState: [])
-        let failed = DispatchSemaphore(value: 0)
+        let ended = DispatchSemaphore(value: 0)
         engine.start(id: UUID(), source: .system, sensitivity: .normal) { event in
             switch event {
             case .signal(let level, let beat):
                 reports.withLock { $0.append(level <= -55 && beat == nil ? "quiet" : "unexpected cue") }
-            case .failed(let message):
-                reports.withLock { $0.append(message) }
-                failed.signal()
+            case .interrupted(let message):
+                reports.withLock { $0.append("interrupted: " + message) }
+                ended.signal()
+            case .failed(let message, _):
+                reports.withLock { $0.append("failed: " + message) }
+                ended.signal()
             }
         }
-        #expect(failed.wait(timeout: .now() + .seconds(1)) == .success)
+        // Well past both limits.
+        let endedEarly = ended.wait(timeout: .now() + .milliseconds(400)) == .success
         let stopped = DispatchSemaphore(value: 0)
         engine.shutdown { _ in stopped.signal() }
         #expect(stopped.wait(timeout: .now() + .seconds(1)) == .success)
         let observed = reports.withLock { $0 }
-        if sendsSilentPCM {
-            #expect(observed.count == 2)
-            #expect(observed.first == "quiet")
-            #expect(observed.last?.hasPrefix("The audio stream stopped.") == true)
-        } else {
-            #expect(observed.count == 1)
-            #expect(observed.first?.hasPrefix("No audio data arrived.") == true)
+        #expect(observed.contains("quiet"), "Waiting for audio still reports silence")
+        #expect(!observed.contains("unexpected cue"))
+        #expect(endedEarly == outputPlaying)
+        switch (outputPlaying, sendsSilentPCM) {
+        case (false, _): #expect(observed.allSatisfy { $0 == "quiet" })
+        case (true, true): #expect(observed.last?.hasPrefix("interrupted: The audio stream stopped.") == true)
+        case (true, false): #expect(observed.last?.hasPrefix("failed: No audio data arrived.") == true)
         }
     }
 
@@ -304,15 +314,18 @@ private func writeSilence(to mailbox: TapMailbox, at hostTimeNs: UInt64 = Captur
 private final class TestTap: CaptureTap {
     let mailbox: TapMailbox
     let sampleRate = 48_000.0
+    let isOutputPlaying: Bool
     private let onPrepare: (DispatchQueue, @escaping @Sendable () -> Void) throws -> Void
     private let onStart: (TapMailbox) throws -> Void
     private let onStop: () -> [CaptureCleanupIssue]
 
-    init(prepare: @escaping (DispatchQueue, @escaping @Sendable () -> Void) throws -> Void = { _, _ in },
+    init(outputPlaying: Bool = true,
+         prepare: @escaping (DispatchQueue, @escaping @Sendable () -> Void) throws -> Void = { _, _ in },
          start: @escaping (TapMailbox) throws -> Void = { _ in },
          stop: @escaping () -> [CaptureCleanupIssue] = { [] }) throws {
         guard let mailbox = TapMailbox() else { throw CaptureFailure("Couldn’t allocate test mailbox.") }
         self.mailbox = mailbox
+        isOutputPlaying = outputPlaying
         onPrepare = prepare
         onStart = start
         onStop = stop

@@ -5,13 +5,18 @@ import OSLog
 
 struct CaptureFailure: LocalizedError {
     let errorDescription: String?
+    /// Allowing system audio recording in Privacy & Security would fix it.
+    var needsAccess = false
 
-    init(_ message: String) { errorDescription = message }
+    init(_ message: String, needsAccess: Bool = false) {
+        errorDescription = message
+        self.needsAccess = needsAccess
+    }
 
     static func check(_ status: OSStatus, _ operation: String) throws {
         guard status != noErr else { return }
         if status == kAudioDevicePermissionsError {
-            throw Self("Allow Taptone to record system audio in System Settings, then try again.")
+            throw Self("Allow Taptone to record system audio in System Settings, then try again.", needsAccess: true)
         }
         let bytes = (0..<4).reversed().map { UInt8(truncatingIfNeeded: UInt32(bitPattern: status) >> ($0 * 8)) }
         let code = bytes.allSatisfy { (33...126).contains($0) } ? String(decoding: bytes, as: UTF8.self) : String(status)
@@ -94,6 +99,29 @@ final class SystemAudioTap {
         guard let (device, callback) = prepared else { throw CaptureFailure("The audio callback wasn’t created.") }
         try CaptureFailure.check(hal.startIO(device, callback), "start listening to system audio")
         teardown.acquired("stop audio") { [release = hal.stopIO] in release(device, callback) }
+    }
+
+    /// Whether another app is playing audio right now. Per-process, so an app using only a headset's
+    /// microphone doesn't count, and Taptone itself never does.
+    var isOutputPlaying: Bool {
+        var size: UInt32 = 0
+        var address = Self.address(kAudioHardwarePropertyProcessObjectList)
+        guard hal.propertySize(Self.system, &address, 0, nil, &size) == noErr, size > 0 else { return false }
+        var processes = [AudioObjectID](repeating: kAudioObjectUnknown, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard hal.readProperty(Self.system, &address, 0, nil, &size, &processes) == noErr else { return false }
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        return processes.prefix(Int(size) / MemoryLayout<AudioObjectID>.size).contains { process in
+            var running: UInt32 = 0
+            var runningSize = UInt32(MemoryLayout.size(ofValue: running))
+            var runningAddress = Self.address(kAudioProcessPropertyIsRunningOutput)
+            guard hal.readProperty(process, &runningAddress, 0, nil, &runningSize, &running) == noErr, running != 0 else {
+                return false
+            }
+            var pid: pid_t = 0
+            var pidSize = UInt32(MemoryLayout.size(ofValue: pid))
+            var pidAddress = Self.address(kAudioProcessPropertyPID)
+            return hal.readProperty(process, &pidAddress, 0, nil, &pidSize, &pid) != noErr || pid != ownPID
+        }
     }
 
     func stop() -> [CaptureCleanupIssue] {
