@@ -2,7 +2,7 @@ import Foundation
 
 /// Detects bass attacks with causal 20 ms energy windows and 10 ms hops.
 /// This is deliberately an onset detector, not a tempo estimator.
-public struct BeatDetector {
+public struct BeatDetector: Sendable {
     public enum Sensitivity: String, CaseIterable, Sendable {
         case low, normal, high
 
@@ -49,8 +49,8 @@ public struct BeatDetector {
 
     /// Feed one stereo frame. For mono, pass the same sample in both channels.
     public mutating func push(left: Float, right: Float) -> Reading? {
-        let l = Self.finiteSample(left)
-        let r = Self.finiteSample(right)
+        let l = left.clampedSample
+        let r = right.clampedSample
         let a = leftBand.push(l, lower: lower, upper: upper)
         let b = rightBand.push(r, lower: lower, upper: upper)
         // Combine power, not samples: anti-phase channels must not cancel.
@@ -81,10 +81,6 @@ public struct BeatDetector {
 
     private static func coefficient(_ cutoff: Double, _ sampleRate: Double) -> Float {
         Float(1 - exp(-2 * .pi * cutoff / sampleRate))
-    }
-
-    private static func finiteSample(_ sample: Float) -> Float {
-        sample.isFinite ? min(1, max(-1, sample)) : 0
     }
 }
 

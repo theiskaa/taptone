@@ -4,7 +4,7 @@ import Foundation
 public struct DemoBeat {
     public static let sampleRate = 48_000.0
     package let framesPerBeat: Int
-    public private(set) var frame = 0
+    private var frame = 0
 
     public init(bpm: Double = 120) {
         precondition(bpm.isFinite && (30...300).contains(bpm))
