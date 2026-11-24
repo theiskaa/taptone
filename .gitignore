@@ -7,3 +7,5 @@
 /plans/
 /experiments/
 /scripts/build-trackpad-probe.sh
+*.profraw
+/dist/
