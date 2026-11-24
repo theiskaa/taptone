@@ -31,7 +31,7 @@ dist: app ## Zip the release app into dist/ for local sharing (nothing is upload
 	ditto -c -k --keepParent .build/Taptone.app dist/Taptone-$(VERSION)-macos.zip
 	@shasum -a 256 dist/Taptone-$(VERSION)-macos.zip
 
-release: ## Release VERSION=X.Y.Z: notarize, tag, push, publish, update the cask (see RELEASING.md)
+release: ## Release VERSION=X.Y.Z: notarize, tag, push, publish, update the cask
 	@test "$(origin VERSION)" = "command line" || { echo "usage: make release VERSION=X.Y.Z" >&2; exit 2; }
 	scripts/release.sh $(VERSION)
 

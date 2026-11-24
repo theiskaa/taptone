@@ -137,7 +137,7 @@ For screenshots, `open .build/Taptone.app --args --demo --open` plays the genera
 
 ## Releasing
 
-See [RELEASING.md](RELEASING.md). `make release VERSION=X.Y.Z` signs, notarizes, tags, publishes the release, and updates the Homebrew cask.
+`make release VERSION=X.Y.Z` signs, notarizes, tags, publishes the release, and updates the Homebrew cask. It checks everything it needs first and tells you what's missing.
 
 ## License
 

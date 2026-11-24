@@ -10,7 +10,7 @@
 # runtime, notarizes and staples it, zips it as dist/Taptone-<version>-macos.zip
 # with dist/SHA256SUMS, checks the archive the way a download is checked, then
 # tags v<version>, pushes main and the tag, publishes the GitHub release with
-# the version's CHANGELOG.md section as notes, and points the cask in the tap
+# the commits since the last release as notes, and points the cask in the tap
 # at it. Releases are cut from a clean main that matches origin/main. Tests run
 # before the version commit; when a run fails after it, run it again: it reuses
 # that commit.
@@ -111,8 +111,6 @@ if gh auth status >/dev/null 2>&1; then
 else
 	stop "gh is not signed in; run gh auth login"
 fi
-grep -q "^## \[$version\]" CHANGELOG.md 2>/dev/null ||
-	stop "CHANGELOG.md has no \"## [$version]\" section for the release notes"
 security find-identity -v -p codesigning | grep -qF "\"$identity\"" ||
 	stop "the keychain has no signing identity named $identity"
 xcrun notarytool history --keychain-profile "$profile" >/dev/null 2>&1 ||
@@ -139,9 +137,7 @@ else
 	fi
 	"$buddy" -c "Set :CFBundleShortVersionString $version" -c "Set :CFBundleVersion $build" "$info"
 	if [ "$dry_run" -eq 0 ]; then
-		# Date the version's heading when it still says Unreleased.
-		sed -i '' "s/^## \[$version\] - Unreleased\$/## [$version] - $(date +%Y-%m-%d)/" CHANGELOG.md
-		git commit -q -m "chore: release $version" App/Info.plist CHANGELOG.md
+		git commit -q -m "chore: release $version" App/Info.plist
 		committed=1
 	fi
 fi
@@ -220,11 +216,7 @@ previous=$(git describe --tags --abbrev=0 2>/dev/null || true)
 	printf '## Install\n\n```sh\nbrew install --cask %s/taptone\n```\n\n' "$(printf '%s\n' "$tap" | sed 's|/homebrew-|/|')"
 	printf 'Or download %s below, unzip it, and move Taptone to Applications.\n\n' "$name"
 	printf 'Requires macOS 14.2 or later and a Mac with a Force Touch trackpad.\n\n## Changes\n\n'
-	# The version's section of CHANGELOG.md, when it has one.
-	if grep -q "^## \[$version\]" CHANGELOG.md 2>/dev/null; then
-		awk -v head="## [$version]" 'index($0, head) == 1 { on = 1; next } on && /^## \[/ { exit } on' CHANGELOG.md |
-			sed -e '/./,$!d'
-	elif [ -n "$previous" ]; then
+	if [ -n "$previous" ]; then
 		git log --no-merges --pretty='- %s' "$previous..HEAD"
 	else
 		echo "The first release."
