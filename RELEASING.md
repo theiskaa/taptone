@@ -6,7 +6,7 @@ A release is a notarized `Taptone-X.Y.Z-macos.zip` with a `SHA256SUMS` on a GitH
 brew install --cask theiskaa/tap/taptone
 ```
 
-Releases are cut on your Mac with `scripts/release.sh`. There is no release workflow in CI, so the signing certificate and notary credentials never leave your keychain.
+Releases are cut on your Mac with `scripts/release.sh`. Nothing runs on a server, so the signing certificate and notary credentials never leave your keychain.
 
 ## One-time setup
 
