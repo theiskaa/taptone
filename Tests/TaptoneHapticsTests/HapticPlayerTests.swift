@@ -19,7 +19,9 @@ import Testing
                                     onset: step == 20 ? 1 : nil))
         }
         clock.run()
-        try await motor.waitUntilClock(passes: 1_400 * Self.ms)
+        // The last cue is heard at 1,250 ms and spent 50 ms later; then the player rests without polling,
+        // so the virtual clock, which only moves when the player sleeps, stops there.
+        try await motor.waitUntilClock(passes: 1_300 * Self.ms)
         #expect(player.stop())
 
         let played = motor.played
@@ -34,6 +36,26 @@ import Testing
             #expect(next.time >= previous.time + previous.segment.durationNs)
         }
         #expect(player.takeReading().kicks == 1)
+        #expect(motor.closed)
+    }
+
+    /// With nothing to play, the thread waits instead of waking 100 times a second, and a kick still
+    /// plays at once.
+    @Test func restsWithoutPollingAndWakesForAKick() async throws {
+        let clock = VirtualClock(startNs: 1_000 * Self.ms, running: true)
+        let motor = FakeMotor(clock: clock)
+        let player = HapticPlayer(output: motor, latencyNs: 0, intensity: .medium,
+                                  clock: clock.now, sleep: clock.sleep, onFailure: {})
+        try await Task.sleep(for: .milliseconds(100))
+        // Polling would have slept, and so moved the clock, about ten times by now.
+        #expect(clock.now() < 1_020 * Self.ms)
+        #expect(motor.played.isEmpty)
+        player.kick()
+        for _ in 0..<500 where !motor.played.contains(where: { $0.segment.isKick }) {
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect(motor.played.contains { $0.segment.isKick })
+        #expect(player.stop())
         #expect(motor.closed)
     }
 

@@ -39,13 +39,24 @@ public final class HapticPlayer: @unchecked Sendable {
         var manualKick: Double?
         var reading = Reading()
         var stopping = false
+        /// The thread is waiting for work, so the next cue, kick, or stop should wake it.
+        var waiting = false
+
+        /// Clears `waiting`, returning whether the thread needs a signal.
+        mutating func wakeIfWaiting() -> Bool {
+            defer { waiting = false }
+            return waiting
+        }
     }
 
     /// Fail closed after this many consecutive driver refusals.
     static let failureLimit = 3
-    /// While the motor rests, how often to look for the next cue. Up to 10 ms late on the first
-    /// kick out of silence, well inside the timeline's lateness allowance, and 100 wakeups a second.
+    /// While the motor rests between cues, how often to look for the next one: up to 10 ms late on a
+    /// kick, well inside the timeline's lateness allowance.
     static let restingPollNs: UInt64 = 10_000_000
+    /// With no cues at all (nothing playing), the thread waits to be woken instead of polling; this is
+    /// only a backstop.
+    static let idleWait = DispatchTimeInterval.seconds(1)
 
     private let shared: OSAllocatedUnfairLock<Shared>
     private let output: HapticOutput
@@ -53,6 +64,7 @@ public final class HapticPlayer: @unchecked Sendable {
     private let sleep: Sleep
     private let onFailure: @Sendable () -> Void
     private let finished = DispatchSemaphore(value: 0)
+    private let wake = DispatchSemaphore(value: 0)
 
     /// `latencyNs` is how long after its capture timestamp the audio is heard.
     public init(output: HapticOutput, latencyNs: UInt64, intensity: HapticIntensity,
@@ -69,7 +81,9 @@ public final class HapticPlayer: @unchecked Sendable {
         thread.start()
     }
 
-    public func append(_ cue: HapticCue) { shared.withLock { $0.timeline.append(cue) } }
+    public func append(_ cue: HapticCue) {
+        if shared.withLock({ state in state.timeline.append(cue); return state.wakeIfWaiting() }) { wake.signal() }
+    }
 
 
     public func setIntensity(_ intensity: HapticIntensity) { shared.withLock { $0.intensity = intensity } }
@@ -78,7 +92,11 @@ public final class HapticPlayer: @unchecked Sendable {
 
     /// Play a kick now, independent of audio.
     public func kick(strength: Double = 1) {
-        shared.withLock { $0.manualKick = max($0.manualKick ?? 0, strength) }
+        let wakes = shared.withLock { state in
+            state.manualKick = max(state.manualKick ?? 0, strength)
+            return state.wakeIfWaiting()
+        }
+        if wakes { wake.signal() }
     }
 
     public func reading() -> Reading { shared.withLock { $0.reading } }
@@ -94,10 +112,11 @@ public final class HapticPlayer: @unchecked Sendable {
     /// Ends the thread, which then closes the output. Returns false if a driver call outlived `timeout`.
     @discardableResult
     public func stop(timeout: DispatchTimeInterval = .milliseconds(250)) -> Bool {
-        let first = shared.withLock { state in
+        let (first, wakes) = shared.withLock { state in
             defer { state.stopping = true }
-            return !state.stopping
+            return (!state.stopping, state.wakeIfWaiting())
         }
+        if wakes { wake.signal() }
         return !first || finished.wait(timeout: .now() + timeout) == .success
     }
 
@@ -137,8 +156,20 @@ public final class HapticPlayer: @unchecked Sendable {
                 }
             }
             guard let segment else {
-                next = now &+ Self.restingPollNs
-                sleep(next)
+                // Nothing playing at all: wait to be woken rather than wake 100 times a second for hours.
+                let idle = shared.withLock { state in
+                    let heard = now > state.latencyNs ? now - state.latencyNs : 0
+                    state.waiting = !state.stopping && state.manualKick == nil && state.timeline.isSpent(at: heard)
+                    return state.waiting
+                }
+                if idle {
+                    _ = wake.wait(timeout: .now() + Self.idleWait)
+                    shared.withLock { $0.waiting = false }
+                    next = clock()
+                } else {
+                    next = now &+ Self.restingPollNs
+                    sleep(next)
+                }
                 continue
             }
             if played {

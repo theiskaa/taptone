@@ -16,6 +16,12 @@ public struct HapticTimeline: Sendable {
 
     public var count: Int { cues.count }
 
+    /// Nothing left that could play at `audioNs` or later: every cue is already too old.
+    public func isSpent(at audioNs: UInt64) -> Bool {
+        guard let last = cues.last else { return true }
+        return last.timeNs &+ Self.maximumCueAgeNs < audioNs
+    }
+
     public mutating func append(_ cue: HapticCue) {
         if let last = cues.last, cue.timeNs <= last.timeNs { return }
         if cues.count >= Self.capacity { cues.removeFirst(cues.count - Self.capacity + 1) }
