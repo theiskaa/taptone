@@ -16,6 +16,11 @@ struct BassPitchTracker: Sendable {
     private var sinceCrossing = 0.0
     private var hasCrossing = false
     private var periods: [Double] = []
+    /// Samples pushed so far.
+    private(set) var frame = 0
+    /// The last few periods (in samples), each with the frame its closing crossing landed on, newest last.
+    /// Unlike `periods`, kept across a break, so an attack can be judged from the crossings after it began.
+    private(set) var recent: [(frame: Int, period: Double)] = []
 
     init(sampleRate: Double) {
         self.sampleRate = sampleRate
@@ -26,6 +31,7 @@ struct BassPitchTracker: Sendable {
         shortestPeriod = sampleRate / 320
         longestPeriod = sampleRate / 35
         periods.reserveCapacity(3)
+        recent.reserveCapacity(Self.recentCount)
     }
 
     var hertz: Double? {
@@ -35,8 +41,11 @@ struct BassPitchTracker: Sendable {
         return sampleRate / sorted[1]
     }
 
+    static let recentCount = 6
+
     mutating func push(_ sample: Double) {
         let value = lowB.push(lowA.push(high.push(sample)))
+        frame += 1
         power += powerStep * (value * value - power)
         sinceCrossing += 1
         defer { previous = value }
@@ -55,6 +64,8 @@ struct BassPitchTracker: Sendable {
         if hasCrossing, (shortestPeriod...longestPeriod).contains(crossing) {
             if periods.count == 3 { periods.removeFirst() }
             periods.append(crossing)
+            if recent.count == Self.recentCount { recent.removeFirst() }
+            recent.append((frame, crossing))
         } else if hasCrossing {
             periods.removeAll(keepingCapacity: true)
         }

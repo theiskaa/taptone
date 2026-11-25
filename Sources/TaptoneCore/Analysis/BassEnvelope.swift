@@ -27,12 +27,18 @@ public struct BassEnvelope: Sendable {
         let b = self.right.push(r)
         // Average power rather than samples so anti-phase lows still register.
         let bass = (a * a + b * b) * 0.5
+        instantBass = bass
         bassPower += (bass > bassPower ? attack : release) * (bass - bassPower)
         let full = (l * l + r * r) * 0.5
         // Keep the broadband reference through a short filter tail so a midrange release
         // cannot accidentally look like bass just because the raw input has gone quiet.
         fullPower += (full > fullPower ? attack : referenceRelease) * (full - fullPower)
     }
+
+    /// Smoothed power below ~150 Hz, for the analyzer's attack checks.
+    var bassLevel: Double { bassPower }
+    /// This sample's power below ~150 Hz, unsmoothed.
+    private(set) var instantBass = 0.0
 
     /// Normalized bass intensity (0...1), or nil below the level and bass-ratio gates.
     public var weight: Double? {

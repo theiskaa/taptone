@@ -51,20 +51,22 @@ import Testing
             return cues.filter { $0.onset != nil }
         }
         let loud = try kicks(gain: 1)
-        // Normalized: a quiet copy plays the same kicks at the same strength, except the very first one
-        // out of silence, which arrives before the normalizer has heard anything.
+        // Normalized: a quiet copy plays the same kicks at the same strength, the first one out of silence
+        // included, because the gain never lifts a sample past full scale while it settles.
         let quiet = try kicks(gain: 0.1)
         #expect(loud.count == 6)
         for (index, cue) in loud.enumerated() {
             #expect((0...40_000_000).contains(Int(cue.timeNs) - index * 500_000_000))
         }
-        #expect(quiet.map(\.timeNs) == loud.dropFirst().map(\.timeNs))
-        #expect(zip(loud.dropFirst(), quiet).allSatisfy { abs(($0.onset ?? 0) - ($1.onset ?? 0)) < 0.1 })
+        #expect(quiet.map(\.timeNs) == loud.map(\.timeNs))
+        #expect(zip(loud, quiet).allSatisfy { abs(($0.onset ?? 0) - ($1.onset ?? 0)) < 0.1 })
     }
 
     /// Kick on 1 and 3, noise snare on 2 and 4, hats on eighths, a bass line with a one-second break, and a melody.
-    /// 0.03 and 0.001 are the same mix 30 and 60 dB quieter, like the volume turned well down.
-    @Test(arguments: [1.0, 0.03, 0.001])
+    /// 0.03 and 0.015 are the same mix 30 and 36 dB quieter, like the volume turned well down; the quietest peaks
+    /// near −40 dBFS. (60 dB quieter, peaking near −64 dBFS, is no longer lifted: it sits with room tone and hum,
+    /// which must stay unfelt.)
+    @Test(arguments: [1.0, 0.03, 0.015])
     func followsAFullMix(gain: Double) throws {
         var noise: UInt64 = 0x9E37_79B9_7F4A_7C15
         func white() -> Double {
@@ -90,8 +92,8 @@ import Testing
         func seconds(_ cue: HapticCue) -> Double { Double(cue.timeNs) / 1e9 }
 
         let kicks = cues.filter { $0.onset != nil }.map(seconds)
-        // A quiet mix can miss only the very first kick out of silence (see marksEachKickOnceAtAnyVolume).
-        let expected = gain < 1 ? [1.0, 2, 3] : [0.0, 1, 2, 3]
+        // The bass notes starting under each kick's tail are not kicks.
+        let expected = [0.0, 1, 2, 3]
         #expect(kicks.count == expected.count)
         for (time, beat) in zip(kicks, expected) { #expect((0...0.04).contains(time - beat)) }
 

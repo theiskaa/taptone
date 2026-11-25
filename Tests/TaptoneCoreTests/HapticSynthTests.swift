@@ -79,6 +79,45 @@ import Testing
         #expect(now < 150_000_000)
     }
 
+    /// A note out of rest fades in over about 15 ms instead of starting at full level with a click.
+    @Test func bassNotesFadeInInsteadOfClicking() throws {
+        var synth = HapticSynth(intensity: .medium)
+        var now: UInt64 = 0
+        var levels: [(time: UInt64, level: Float)] = []
+        while now < 40_000_000 {
+            let next = synth.next(at: now, cue: HapticCue(timeNs: now, body: 1, pitchHz: 55), onset: nil)
+            let segment = try #require(next)
+            levels.append((now, segment.level))
+            now += segment.durationNs
+        }
+        let full = Float(HapticIntensity.medium.bodyLevel)
+        #expect(levels[0].level <= full / 2)
+        #expect(zip(levels.dropFirst(), levels).allSatisfy { $0.level >= $1.level })
+        #expect(levels.filter { $0.time >= 20_000_000 }.allSatisfy { abs($0.level - full) < 0.001 })
+    }
+
+    /// Under a kick the held bass steps back, then returns within about 80 ms.
+    @Test func bodyStepsBackUnderAKick() throws {
+        var synth = HapticSynth(intensity: .medium)
+        var now: UInt64 = 0
+        var onset: Double?
+        var kickAt: UInt64?
+        var after: [(age: UInt64, segment: HapticSegment)] = []
+        while now < 600_000_000 {
+            if kickAt == nil, now >= 300_000_000 { onset = 1; kickAt = now }
+            let next = synth.next(at: now, cue: HapticCue(timeNs: now, body: 1, pitchHz: 55), onset: onset)
+            let segment = try #require(next)
+            onset = nil
+            if let kickAt { after.append((now - kickAt, segment)) }
+            now += segment.durationNs
+        }
+        let full = Float(HapticIntensity.medium.bodyLevel)
+        let ducked = after.filter { !$0.segment.isKick && $0.age < 60_000_000 }
+        #expect(!ducked.isEmpty)
+        #expect(ducked.allSatisfy { $0.segment.level < 0.9 * full })
+        #expect(after.filter { $0.age > 100_000_000 }.allSatisfy { abs($0.segment.level - full) < 0.001 })
+    }
+
     @Test(arguments: HapticIntensity.allCases)
     func neverExceedsTheHardCeiling(intensity: HapticIntensity) {
         var synth = HapticSynth(intensity: intensity)
