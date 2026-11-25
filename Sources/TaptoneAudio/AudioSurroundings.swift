@@ -21,7 +21,12 @@ public final class AudioSurroundings {
 
     public private(set) var state = State()
     private let onChange: (State) -> Void
-    private var listeners: [(object: AudioObjectID, address: AudioObjectPropertyAddress, block: AudioObjectPropertyListenerBlock)] = []
+    private typealias Listener = (object: AudioObjectID, address: AudioObjectPropertyAddress, block: AudioObjectPropertyListenerBlock)
+    /// The default output's volume and mute; replaced when the output changes.
+    private var outputListeners: [Listener] = []
+    /// Each app's microphone use, by audio process. Kept across process list changes, so only apps
+    /// that come or go are touched.
+    private var processListeners: [AudioObjectID: Listener] = [:]
     private static let system = AudioObjectID(kAudioObjectSystemObject)
     /// System services that listen on their own, such as Siri and Sound Recognition: never a call.
     private static let backgroundListeners = ["com.apple.CoreSpeech", "com.apple.corespeechd", "com.apple.assistantd",
@@ -30,20 +35,33 @@ public final class AudioSurroundings {
     /// `onChange` runs on the main actor whenever the state changes. Keep one for the app’s lifetime.
     public init(onChange: @escaping (State) -> Void) {
         self.onChange = onChange
-        watch()
+        _ = listen(Self.system, kAudioHardwarePropertyDefaultOutputDevice) { $0.watchOutput() }
+        _ = listen(Self.system, kAudioHardwarePropertyProcessObjectList) { $0.watchProcesses() }
+        watchOutput()
+        watchProcesses()
     }
 
-    private func watch() {
-        unwatch()
-        listen(Self.system, kAudioHardwarePropertyDefaultOutputDevice) { $0.watch() }
-        // Apps come and go; watch each one's microphone use.
-        listen(Self.system, kAudioHardwarePropertyProcessObjectList) { $0.watch() }
-        if let output = Self.defaultDevice(kAudioHardwarePropertyDefaultOutputDevice) {
-            listen(output, kAudioHardwareServiceDeviceProperty_VirtualMainVolume, scope: kAudioObjectPropertyScopeOutput) { $0.refresh() }
-            listen(output, kAudioDevicePropertyMute, scope: kAudioObjectPropertyScopeOutput) { $0.refresh() }
+    private func watchOutput() {
+        for var listener in outputListeners {
+            AudioObjectRemovePropertyListenerBlock(listener.object, &listener.address, .main, listener.block)
         }
-        for process in Self.callerCandidates() {
-            listen(process, kAudioProcessPropertyIsRunningInput) { $0.refresh() }
+        outputListeners = []
+        if let output = Self.defaultDevice(kAudioHardwarePropertyDefaultOutputDevice) {
+            for selector in [kAudioHardwareServiceDeviceProperty_VirtualMainVolume, kAudioDevicePropertyMute] {
+                if let listener = listen(output, selector, scope: kAudioObjectPropertyScopeOutput, { $0.refresh() }) {
+                    outputListeners.append(listener)
+                }
+            }
+        }
+        refresh()
+    }
+
+    private func watchProcesses() {
+        let candidates = Set(Self.callerCandidates())
+        // A process that's gone took its listener with it; removing that would only log an error.
+        processListeners = processListeners.filter { candidates.contains($0.key) }
+        for process in candidates where processListeners[process] == nil {
+            processListeners[process] = listen(process, kAudioProcessPropertyIsRunningInput) { $0.refresh() }
         }
         refresh()
     }
@@ -64,24 +82,17 @@ public final class AudioSurroundings {
 
     private func listen(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
                         scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal,
-                        _ action: @escaping @MainActor (AudioSurroundings) -> Void) {
+                        _ action: @escaping @MainActor (AudioSurroundings) -> Void) -> Listener? {
         var address = AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
-        guard AudioObjectHasProperty(object, &address) else { return }
+        guard AudioObjectHasProperty(object, &address) else { return nil }
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 action(self)
             }
         }
-        guard AudioObjectAddPropertyListenerBlock(object, &address, .main, block) == noErr else { return }
-        listeners.append((object, address, block))
-    }
-
-    private func unwatch() {
-        for var listener in listeners {
-            AudioObjectRemovePropertyListenerBlock(listener.object, &listener.address, .main, listener.block)
-        }
-        listeners = []
+        guard AudioObjectAddPropertyListenerBlock(object, &address, .main, block) == noErr else { return nil }
+        return (object, address, block)
     }
 
     /// Every audio process that could be on a call: not Taptone, whose own capture reads input, and

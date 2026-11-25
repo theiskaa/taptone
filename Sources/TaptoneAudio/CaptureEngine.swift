@@ -45,7 +45,8 @@ public final class CaptureEngine: @unchecked Sendable {
     struct Timeouts {
         var firstBufferNs: UInt64 = 12_000_000_000
         var stalledStreamNs: UInt64 = 5_000_000_000
-        var outputCheckNs: UInt64 = 250_000_000
+        /// Each check reads every audio process, so not too often; the limits above are seconds long.
+        var outputCheckNs: UInt64 = 1_000_000_000
         /// Buffers arrive every ~10 ms while audio flows; a longer gap means none is arriving.
         var receivingNs: UInt64 = 100_000_000
     }
