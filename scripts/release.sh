@@ -1,5 +1,5 @@
 #!/bin/sh
-# Release Taptone as a GitHub release and a Homebrew cask.
+# Release Taptone as a GitHub release, which install.sh downloads.
 #
 #   scripts/release.sh 0.2.0
 #   scripts/release.sh --dry-run 0.2.0
@@ -10,26 +10,22 @@
 # runtime, notarizes and staples it, zips it as dist/Taptone-<version>-macos.zip
 # with dist/SHA256SUMS, checks the archive the way a download is checked, then
 # tags v<version>, pushes main and the tag, publishes the GitHub release with
-# the commits since the last release as notes, and points the cask in the tap
-# at it. Releases are cut from a clean main that matches origin/main. Tests run
+# the commits since the last release as notes. Releases are cut from a clean main that matches origin/main. Tests run
 # before the version commit; when a run fails after it, run it again: it reuses
 # that commit.
 #
 # --dry-run does the local part with a bumped copy of Info.plist: tests,
-# build, Developer ID signing, zip, SHA256SUMS, archive checks and the cask,
-# rendered into dist/. It reports what the preflight would stop on, and
+# build, Developer ID signing, zip, SHA256SUMS and archive checks, into dist/. It reports what the preflight would stop on, and
 # commits, notarizes, tags, pushes and publishes nothing.
 #
 # Environment:
 #   SIGN_IDENTITY   Developer ID Application identity
 #                   (default: Developer ID Application: Ismayil Shahverdiyev (A474HM679A))
 #   NOTARY_PROFILE  notarytool keychain profile (default: taptone-notary)
-#   TAP             the Homebrew tap the cask lives in (default: theiskaa/homebrew-tap)
 set -eu
 
 identity=${SIGN_IDENTITY:-"Developer ID Application: Ismayil Shahverdiyev (A474HM679A)"}
 profile=${NOTARY_PROFILE:-taptone-notary}
-tap=${TAP:-theiskaa/homebrew-tap}
 repo="theiskaa/taptone"
 releases="https://github.com/$repo/releases"
 
@@ -103,11 +99,7 @@ fi
 ! git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 || stop "$tag already exists on origin"
 if gh auth status >/dev/null 2>&1; then
 	[ "$(gh repo view "$repo" --json visibility --jq .visibility 2>/dev/null)" = PUBLIC ] ||
-		stop "$repo is not public, so Homebrew and browsers cannot download its releases"
-	case $(gh repo view "$tap" --json viewerPermission --jq .viewerPermission 2>/dev/null) in
-	ADMIN | MAINTAIN | WRITE) ;;
-	*) stop "you cannot push to $tap, whose cask this release updates" ;;
-	esac
+		stop "$repo is not public, so install.sh and browsers cannot download its releases"
 else
 	stop "gh is not signed in; run gh auth login"
 fi
@@ -161,7 +153,7 @@ case $archs in *" x86_64 "*) ;; *) fail "the app has no x86_64 slice" ;; esac
 dist=dist
 zip="$dist/$name"
 mkdir -p "$dist"
-rm -f "$zip" "$dist/SHA256SUMS" "$dist/notes.md" "$dist/taptone.rb"
+rm -f "$zip" "$dist/SHA256SUMS" "$dist/notes.md"
 ditto -c -k --keepParent "$app" "$zip"
 
 if [ "$dry_run" -eq 1 ]; then
@@ -213,11 +205,12 @@ step "Writing the release notes"
 previous=$(git describe --tags --abbrev=0 2>/dev/null || true)
 # shellcheck disable=SC2016 # the backticks are Markdown
 {
-	printf '## Install\n\n```sh\nbrew install --cask %s/taptone\n```\n\n' "$(printf '%s\n' "$tap" | sed 's|/homebrew-|/|')"
+	printf '## Install or update\n\n```sh\ncurl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | sh\n```\n\n' "$repo"
 	printf 'Or download %s below, unzip it, and move Taptone to Applications.\n\n' "$name"
 	printf 'Requires macOS 14.2 or later and a Mac with a Force Touch trackpad.\n\n## Changes\n\n'
 	if [ -n "$previous" ]; then
-		git log --no-merges --pretty='- %s' "$previous..HEAD"
+		# Only what users notice: chores, docs, and the version commit stay out.
+		git log --no-merges --invert-grep --grep='^chore' --grep='^docs' --pretty='- %s' "$previous..HEAD"
 	else
 		echo "The first release."
 	fi
@@ -225,8 +218,6 @@ previous=$(git describe --tags --abbrev=0 2>/dev/null || true)
 echo "$dist/notes.md"
 
 if [ "$dry_run" -eq 1 ]; then
-	step "Rendering the cask"
-	TAP=$tap scripts/update-cask.sh --dry-run "$version"
 	step "Dry run done"
 	echo "Built, signed and checked $zip."
 	echo "Nothing was committed, notarized, tagged, pushed or published."
@@ -243,11 +234,7 @@ git push -q --atomic origin main "$tag" || {
 }
 gh release create "$tag" "$zip" "$dist/SHA256SUMS" --repo "$repo" --verify-tag \
 	--title "Taptone $version" --notes-file "$dist/notes.md" ||
-	fail "$tag is pushed, but its GitHub release wasn't created; retry with: gh release create $tag $zip $dist/SHA256SUMS --repo $repo --verify-tag --title \"Taptone $version\" --notes-file $dist/notes.md, then scripts/update-cask.sh $version"
-
-step "Updating the Homebrew cask"
-TAP=$tap scripts/update-cask.sh "$version" ||
-	fail "$tag is published, but the cask was not updated; retry with scripts/update-cask.sh $version"
+	fail "$tag is pushed, but its GitHub release wasn't created; retry with: gh release create $tag $zip $dist/SHA256SUMS --repo $repo --verify-tag --title \"Taptone $version\" --notes-file $dist/notes.md"
 
 step "Checking the download"
 if curl -fsSL "$releases/download/$tag/SHA256SUMS" | grep -qF "$name"; then

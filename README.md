@@ -24,11 +24,13 @@ Taptone is a menu bar app that plays the bass of whatever’s on your Mac throug
 
 ## Install
 
-Once the first version is released, install it with [Homebrew](https://brew.sh):
+Once the first version is released, install it from Terminal:
 
 ```sh
-brew install --cask theiskaa/tap/taptone
+curl -fsSL https://raw.githubusercontent.com/theiskaa/taptone/main/install.sh | sh
 ```
+
+The script downloads the latest release, checks that it’s signed by its developer and notarized by Apple, puts Taptone in Applications and opens it. Run the same command to update.
 
 Or download `Taptone-<version>-macos.zip` from [Releases](https://github.com/theiskaa/taptone/releases) and move Taptone to Applications.
 
@@ -95,13 +97,7 @@ open -a Taptone --args --diagnostics
 
 ## Uninstall
 
-With Homebrew, `--zap` also removes Taptone’s settings:
-
-```sh
-brew uninstall --zap --cask taptone
-```
-
-Otherwise, quit Taptone and move it to the Trash. To also forget its settings and audio permission:
+Quit Taptone and move it to the Trash. To also forget its settings and audio permission:
 
 ```sh
 defaults delete com.theiskaa.taptone

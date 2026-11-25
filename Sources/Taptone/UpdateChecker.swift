@@ -21,12 +21,8 @@ enum UpdateChecker {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
     }
 
-    /// Installed with Homebrew, so `brew upgrade` is the way to update.
-    static var isHomebrewInstall: Bool {
-        ["/opt/homebrew/Caskroom/taptone", "/usr/local/Caskroom/taptone"].contains {
-            FileManager.default.fileExists(atPath: $0)
-        }
-    }
+    /// The same command installs and updates.
+    static let installCommand = "curl -fsSL https://raw.githubusercontent.com/theiskaa/taptone/main/install.sh | sh"
 
     static func check() async -> Outcome {
         var request = URLRequest(url: latest, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 15)
@@ -56,24 +52,18 @@ enum UpdateChecker {
         return false
     }
 
-    /// Explains the update and offers the way to get it.
+    /// Explains the update and offers the command that installs it.
     static func present(_ release: Release) {
         let alert = NSAlert()
         alert.messageText = "Taptone \(release.version) is available"
-        let homebrew = isHomebrewInstall
-        if homebrew {
-            alert.informativeText = "You have \(currentVersion). Update with Homebrew:\n\nbrew upgrade --cask taptone"
-            alert.addButtons("Copy Command", "What’s New", "Later")
-        } else {
-            alert.informativeText = "You have \(currentVersion). The download page lists what’s new."
-            alert.addButtons("Download", "Later")
-        }
+        alert.informativeText = "You have \(currentVersion). To update, run this in Terminal:\n\n\(installCommand)"
+        alert.addButtons("Copy Command", "What’s New", "Later")
         NSApp.activate()
-        switch (alert.runModal(), homebrew) {
-        case (.alertFirstButtonReturn, true):
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
             NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString("brew upgrade --cask taptone", forType: .string)
-        case (.alertFirstButtonReturn, false), (.alertSecondButtonReturn, true):
+            NSPasteboard.general.setString(installCommand, forType: .string)
+        case .alertSecondButtonReturn:
             NSWorkspace.shared.open(release.page)
         default:
             break
