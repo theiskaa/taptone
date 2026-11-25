@@ -7,6 +7,8 @@ class MenuControl: NSControl {
     var onChange: () -> Void = {}
 
     override var acceptsFirstResponder: Bool { false }
+    // A bare NSControl isn't exposed to VoiceOver, so its role, label and actions would go unseen.
+    override func isAccessibilityElement() -> Bool { true }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override var isFlipped: Bool { true }
 
