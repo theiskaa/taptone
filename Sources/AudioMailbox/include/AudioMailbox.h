@@ -6,7 +6,7 @@
 
 typedef struct TTAudioMailbox TTAudioMailbox;
 
-enum { TTMailboxSlots = 8, TTMailboxMaxFrames = 8192 };
+enum { TTMailboxSlots = 32, TTMailboxMaxFrames = 8192 };
 
 typedef struct {
     const float *stereo;

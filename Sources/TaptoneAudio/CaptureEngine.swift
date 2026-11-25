@@ -50,8 +50,8 @@ public final class CaptureEngine: @unchecked Sendable {
         var receivingNs: UInt64 = 100_000_000
     }
 
-    /// How often to drain the mailbox: briskly while audio arrives, gently while none does. Eight slots
-    /// hold about 80 ms, so the slow pace can't overflow them.
+    /// How often to drain the mailbox: briskly while audio arrives, gently while none does. The slots
+    /// hold at least 80 ms even with small buffers at 192 kHz, so the slow pace can't overflow them.
     private static let fastPace = DispatchTimeInterval.milliseconds(8)
     private static let restingPace = DispatchTimeInterval.milliseconds(20)
 
