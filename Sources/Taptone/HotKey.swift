@@ -11,9 +11,10 @@ final class HotKey {
 
     init(action: @escaping () -> Void) { self.action = action }
 
-    /// Safe to call repeatedly. If another app already owns the shortcut, nothing is left installed.
-    func register() {
-        guard handler == nil else { return }
+    /// Safe to call repeatedly. False when another app already owns the shortcut; then nothing is left installed.
+    @discardableResult
+    func register() -> Bool {
+        guard handler == nil else { return true }
         var type = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
         let context = Unmanaged.passUnretained(self).toOpaque()
         let installed = InstallEventHandler(GetApplicationEventTarget(), { _, _, context in
@@ -24,12 +25,16 @@ final class HotKey {
         }, 1, &type, context, &handler)
         guard installed == noErr else {
             handler = nil
-            return
+            return false
         }
         let id = EventHotKeyID(signature: OSType(0x5450_4E45), id: 1) // "TPNE"
         let registered = RegisterEventHotKey(UInt32(kVK_ANSI_P), UInt32(controlKey | optionKey | cmdKey), id,
                                              GetApplicationEventTarget(), 0, &reference)
-        if registered != noErr { unregister() }
+        guard registered == noErr else {
+            unregister()
+            return false
+        }
+        return true
     }
 
     func unregister() {

@@ -71,7 +71,12 @@ struct MainView: View {
                     }
                 Toggle(isOn: $settings.pauseShortcut) {
                     Text("Pause shortcut")
-                    Text("\(HotKey.title) pauses or resumes Taptone from any app.")
+                    if activity.shortcutTaken {
+                        Text("Another app already uses \(HotKey.title), so it can’t pause Taptone.")
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("\(HotKey.title) pauses or resumes Taptone from any app.")
+                    }
                 }
                 Toggle(isOn: $settings.checksForUpdates) {
                     Text("Check for updates")

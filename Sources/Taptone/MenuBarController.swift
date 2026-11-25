@@ -421,7 +421,12 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
     }
 
     private func applyShortcut() {
-        if settings.pauseShortcut { hotKey.register() } else { hotKey.unregister() }
+        if settings.pauseShortcut {
+            activity.shortcutTaken = !hotKey.register()
+        } else {
+            hotKey.unregister()
+            activity.shortcutTaken = false
+        }
     }
 
     // MARK: Kick test

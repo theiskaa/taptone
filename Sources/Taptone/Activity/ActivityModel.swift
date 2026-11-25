@@ -47,6 +47,8 @@ final class ActivityModel {
     var kickTest = KickTestState.idle
     /// A newer version on GitHub, once a check finds one.
     var availableUpdate: UpdateChecker.Release?
+    /// The pause shortcut is on, but another app already owns it.
+    var shortcutTaken = false
 
     func update(live reading: HapticPlayer.Reading?) {
         live = reading
