@@ -1,8 +1,8 @@
 import AppKit
 import SwiftUI
-import TaptoneCore
 
 /// Shown on first launch, before Taptone listens, so the system audio prompt never arrives unexplained.
+/// Opened again later, it's only a tour: Done closes it.
 struct WelcomeView: View {
     struct Actions {
         let toggleKickTest: () -> Void
@@ -11,6 +11,7 @@ struct WelcomeView: View {
     }
 
     let activity: ActivityModel
+    let firstRun: Bool
     let actions: Actions
 
     var body: some View {
@@ -35,28 +36,36 @@ struct WelcomeView: View {
                 feature("hand.point.up.left", "Rest a fingertip on the trackpad",
                         "A light touch is all it takes. Your speakers or headphones play as usual.")
                 feature("lock", "Private by design",
-                        "Taptone listens to what’s playing only while it’s open. Nothing is recorded, saved, or sent anywhere.")
+                        "Audio is felt as it plays, right on your Mac. It’s never saved or sent anywhere.")
             }
             .padding(.top, 28)
 
-            kickTest.padding(.top, 26)
+            KickTestView(activity: activity, toggle: actions.toggleKickTest,
+                         openTrackpadSettings: actions.openTrackpadSettings)
+                .padding(12)
+                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+                .padding(.top, 26)
 
             Spacer(minLength: 20)
             Button(action: actions.start) {
-                Text("Continue").frame(width: 220)
+                Text(firstRun ? "Continue" : "Done").frame(width: 220)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .keyboardShortcut(.defaultAction)
-            Text("macOS will ask once to allow system audio recording.")
+            Text(firstRun
+                 ? "Next, macOS asks to allow system audio recording. Taptone only listens.\nAfterwards, find Taptone in the menu bar."
+                 : "Taptone lives in the menu bar.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 10)
         }
         .padding(.horizontal, 44)
         .padding(.top, 36)
-        .padding(.bottom, 28)
-        .frame(width: 500, height: 640)
+        .padding(.bottom, 24)
+        .frame(width: 500, height: 650)
         .tint(Brand.tint)
     }
 
@@ -74,78 +83,5 @@ struct WelcomeView: View {
             Spacer(minLength: 0)
         }
         .accessibilityElement(children: .combine)
-    }
-
-    // MARK: Motor test
-
-    private var kickTest: some View {
-        HStack(spacing: 12) {
-            KickDots(test: activity.kickTest)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(testTitle).font(.callout.weight(.medium))
-                Text(testDetail).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 8)
-            if activity.kickTest == .finished {
-                Button("Trackpad Settings…", action: actions.openTrackpadSettings).buttonStyle(.link)
-            }
-            Button(testButton, action: actions.toggleKickTest)
-        }
-        .padding(12)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
-    }
-
-    private var testTitle: String {
-        switch activity.kickTest {
-        case .idle: "Try the motor first"
-        case .running(0): "Rest a fingertip on the trackpad"
-        case .running(let sent): "Kick \(sent) of \(KickTest.count)"
-        case .finished: "That’s how a kick feels"
-        case .failed: "The motor stopped responding"
-        }
-    }
-
-    private var testDetail: String {
-        switch activity.kickTest {
-        case .idle: "Four kicks, one a second. No audio needed."
-        case .running: activity.usesMotor ? "Sent to the trackpad motor." : "Sent as standard taps."
-        case .finished: "Felt nothing? Turn on Force Click in Trackpad Settings."
-        case .failed: "Try again, or restart your Mac if it keeps happening."
-        }
-    }
-
-    private var testButton: String {
-        switch activity.kickTest {
-        case .idle: "Try"
-        case .running: "Stop"
-        case .finished, .failed: "Again"
-        }
-    }
-}
-
-/// Four dots, filled as kicks are sent; the newest one stays enlarged while the test runs.
-private struct KickDots: View {
-    let test: ActivityModel.KickTestState
-
-    private var sent: Int {
-        switch test {
-        case .idle, .failed: 0
-        case .running(let sent): sent
-        case .finished: KickTest.count
-        }
-    }
-
-    var body: some View {
-        HStack(spacing: 5) {
-            ForEach(0..<KickTest.count, id: \.self) { index in
-                Circle()
-                    .fill(index < sent ? Brand.tint : Color.secondary.opacity(0.25))
-                    .frame(width: 8, height: 8)
-                    .scaleEffect(index == sent - 1 && test != .finished ? 1.35 : 1)
-                    .animation(.spring(duration: 0.3, bounce: 0.5), value: test)
-            }
-        }
-        .accessibilityElement()
-        .accessibilityLabel("\(sent) of \(KickTest.count) kicks sent")
     }
 }

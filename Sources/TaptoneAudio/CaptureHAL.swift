@@ -7,6 +7,7 @@ struct CaptureHAL {
     var destroyTap = AudioHardwareDestroyProcessTap
     var readProperty = AudioObjectGetPropertyData
     var propertySize = AudioObjectGetPropertyDataSize
+    var writeProperty = AudioObjectSetPropertyData
     var createAggregate = AudioHardwareCreateAggregateDevice
     var destroyAggregate = AudioHardwareDestroyAggregateDevice
     var createIO = AudioDeviceCreateIOProcIDWithBlock

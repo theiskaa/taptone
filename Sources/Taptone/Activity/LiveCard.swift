@@ -13,6 +13,9 @@ struct LiveCard: View {
             header
             if case .failed(let problem, let needsAccess) = activity.phase {
                 failure(problem, needsAccess: needsAccess)
+            } else if activity.phase == .noTrackpad {
+                failure("Taptone plays on a Force Touch trackpad: the one built into a MacBook, or a Magic Trackpad 2 or later.",
+                        needsAccess: false)
             } else {
                 TimelineView(.animation(minimumInterval: 1 / 30, paused: reduceMotion || !animates)) { timeline in
                     VStack(spacing: 12) {
@@ -52,15 +55,23 @@ struct LiveCard: View {
             }
             Spacer(minLength: 8)
             Button(action: actions.toggleHaptics) {
-                Image(systemName: activity.phase.isLive ? "pause.fill" : "play.fill")
+                Image(systemName: button.symbol)
                     .font(.system(size: 13, weight: .semibold))
                     .frame(width: 18, height: 18)
             }
             .buttonStyle(.bordered)
             .buttonBorderShape(.circle)
             .controlSize(.large)
-            .help(activity.phase.isLive ? "Pause haptics" : "Resume haptics")
-            .accessibilityLabel(activity.phase.isLive ? "Pause haptics" : "Resume haptics")
+            .help(button.label)
+            .accessibilityLabel(button.label)
+        }
+    }
+
+    private var button: (symbol: String, label: String) {
+        switch activity.phase {
+        case .preview: ("stop.fill", "Stop demo")
+        case let phase where phase.isLive: ("pause.fill", "Pause haptics")
+        default: ("play.fill", activity.isPaused ? "Resume haptics" : "Start listening")
         }
     }
 
@@ -68,7 +79,7 @@ struct LiveCard: View {
         switch activity.phase {
         case .listening(true): Brand.tint
         case .listening(false), .preview: .secondary
-        case .failed: .orange
+        case .failed, .noTrackpad: .orange
         default: Color(nsColor: .tertiaryLabelColor)
         }
     }
@@ -76,12 +87,15 @@ struct LiveCard: View {
     private var subtitle: String {
         let output = activity.device?.name ?? "No output"
         switch activity.phase {
-        case .off: return activity.isPaused ? "Haptics are paused" : "Press play to listen"
+        case .off where activity.isPaused: return activity.pauseEnd.map { "Haptics resume at \($0)" } ?? "Haptics are paused"
+        case .off where activity.inCall: return "Listening resumes when the call ends"
+        case .off: return "Press play to listen"
         case .starting: return "Connecting to \(output)"
         case .listening(true): return activity.usesMotor ? "Following the bass on \(output)" : "One tap per kick on \(output)"
         case .listening(false): return "Play something on \(output)"
         case .preview: return "Generated kicks, nothing sent to the trackpad"
-        case .failed(_, let needsAccess): return needsAccess ? "Capture didn’t start" : "Press play to try again"
+        case .failed(_, let needsAccess): return needsAccess ? "Allow system audio access to start" : "Press play to try again"
+        case .noTrackpad: return "Connect a Magic Trackpad, then press play"
         }
     }
 
@@ -104,7 +118,7 @@ struct LiveCard: View {
                 let circle = Path(ellipseIn: CGRect(x: rect.midX - radius, y: rect.midY - radius, width: radius * 2, height: radius * 2))
                 context.stroke(circle, with: .color(Brand.tint.opacity(ring)), lineWidth: 1.5)
             }
-            let level = displayLevel(now: now, lastKick: lastKick)
+            let level = displayLevel(now: now)
             let style = StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round)
             guard level > 0.01 else {
                 context.stroke(SoundWave(amplitude: 0, cycles: 0).path(in: lane, steps: 1),
@@ -129,11 +143,10 @@ struct LiveCard: View {
     }
 
     /// 0...1: the motor's level when it's playing. Without the motor, each kick swells and fades.
-    private func displayLevel(now: UInt64, lastKick: UInt64?) -> Double {
+    private func displayLevel(now: UInt64) -> Double {
         guard animates else { return 0 }
         if playsMotor { return activity.live?.shownLevel ?? 0 }
-        guard let lastKick else { return 0 }
-        return 0.85 * exp(-Double(now &- lastKick) / 1e9 / 0.25)
+        return activity.kickLevel(now: now)
     }
 
     private var playsMotor: Bool { activity.usesMotor && activity.phase != .preview }
@@ -194,7 +207,7 @@ struct LiveCard: View {
             }
             if needsAccess {
                 HStack {
-                    Button("Open Privacy Settings", action: actions.openPrivacySettings)
+                    Button("Open Privacy & Security", action: actions.openPrivacySettings)
                     Button("Why Taptone Needs This", action: actions.explainAudioAccess).buttonStyle(.link)
                 }
             }

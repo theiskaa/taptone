@@ -20,6 +20,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
     private let log = Logger(subsystem: "com.theiskaa.taptone", category: "Session")
     private let settings = Settings()
     private let activity = ActivityModel()
+    private lazy var surroundings = AudioSurroundings { [weak self] in self?.surroundingsChanged($0) }
+    private lazy var hotKey = HotKey { [weak self] in self?.toggleHaptics() }
 
     // A live session or the kick test, never both.
     private var sessionID: UUID?
@@ -27,48 +29,66 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
     private var kickTest: Task<Void, Never>?
     private var lastAudible: UInt64?
     private var liveTimer: Timer?
+    private var pauseTimer: Timer?
+    private var updateTimer: Timer?
     private var quitTask: Task<Void, Never>?
     private var reconnects: [Date] = []
     // Sleep, lock, and wake. A resume waits a second, so it checks nothing has suspended since.
     private var screenLocked = false
     private var suspensions = 0
+    /// Calls pause listening only as they start, so pressing play during one still works.
+    private var microphoneWasInUse = false
     /// The first launch's welcome starts listening when it closes; reopening it later doesn't.
     private var welcomeStartsListening = false
     /// Listening to resume after the kick test, and the failure to show again if it doesn't.
     private var resumesAfterKickTest = false
     private var failureBeforeKickTest: ActivityModel.Phase?
+    /// A Bluetooth trackpad can take a few seconds to come back after wake, so a missing one is
+    /// looked for again a few times before Taptone gives up.
+    private var trackpadRetries = 0
+    /// The apps the running session ignores, so only a real change rewrites the tap.
+    private var ignoredApps: Set<String> = []
 
     private var statusItem: NSStatusItem!
     private lazy var header = MenuHeaderView(settings: settings) { [weak self] in
         self?.toggleHaptics()
     }
-    private lazy var accessItem = item("Allow system audio access…", #selector(openPrivacySettings))
-    private lazy var previewItem = item("Preview demo", #selector(togglePreview))
-    private lazy var mainWindow = window("Taptone", MainView(activity: activity, settings: settings, actions: .init(
-        toggleHaptics: { [weak self] in self?.toggleHaptics() },
-        openPrivacySettings: { [weak self] in self?.openPrivacySettings() },
-        explainAudioAccess: { [weak self] in self?.explainAudioAccess() }
-    )), showsTitle: true)
-    private lazy var welcomeWindow = window("Welcome to Taptone", WelcomeView(activity: activity, actions: .init(
-        toggleKickTest: { [weak self] in self?.toggleKickTest() },
-        openTrackpadSettings: { NSWorkspace.shared.open(Self.trackpadSettings) },
-        start: { [weak self] in self?.closeWelcome() }
-    )), showsTitle: false)
+    private lazy var updateItem = item("Update Available…", #selector(checkForUpdates))
+    private lazy var accessItem = item("Allow System Audio Access…", #selector(openPrivacySettings))
+    private lazy var pauseHourItem = item("Pause for 1 Hour", #selector(pauseForAnHour))
+    private lazy var previewItem = item("Preview Demo", #selector(togglePreview))
+    private lazy var mainWindow: NSWindow = {
+        let window = window("Taptone", MainView(activity: activity, settings: settings, actions: .init(
+            toggleHaptics: { [weak self] in self?.toggleHaptics() },
+            openPrivacySettings: { [weak self] in self?.openPrivacySettings() },
+            explainAudioAccess: { [weak self] in self?.explainAudioAccess() },
+            toggleKickTest: { [weak self] in self?.toggleKickTest() },
+            openTrackpadSettings: { NSWorkspace.shared.open(Self.trackpadSettings) },
+            checkForUpdates: { [weak self] in self?.checkForUpdates() }
+        )), showsTitle: true)
+        window.delegate = self
+        return window
+    }()
+    private var welcomeWindow: NSWindow?
 
     // MARK: Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        installMainMenu()
         let headerItem = NSMenuItem()
         headerItem.view = header
         let menu = NSMenu()
         menu.autoenablesItems = false
         menu.delegate = self
         menu.addItem(headerItem)
+        menu.addItem(updateItem)
         menu.addItem(accessItem)
         menu.addItem(.separator())
         menu.addItem(item("Open Taptone", #selector(showMainWindow), key: "o"))
+        menu.addItem(pauseHourItem)
         menu.addItem(submenu("Diagnostics", [previewItem, item("Welcome…", #selector(showWelcome))]))
         menu.addItem(.separator())
+        menu.addItem(item("About Taptone", #selector(showAbout)))
         menu.addItem(item("Quit Taptone", #selector(quit), key: "q"))
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.menu = menu
@@ -76,6 +96,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
         settings.onChange = { [weak self] in self?.settingsChanged() }
         activity.usesMotor = TrackpadActuator.isSupported
         activity.device = OutputDevice.current()
+        microphoneWasInUse = surroundings.state.microphoneInUse
+        applyShortcut()
         render()
 
         let workspace = NSWorkspace.shared.notificationCenter
@@ -95,16 +117,29 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
         // Developer aids, each also an environment variable such as TAPTONE_DEMO=1: `--demo` plays the
         // generated demo instead of listening, `--open` shows the main window, `--welcome` the welcome,
         // and `--diagnostics` logs session details.
-        if Self.flag("demo") {
-            activity.isPaused = true
+        let demo = Self.flag("demo")
+        if !demo, AppMover.offerIfNeeded(settings) { return }
+        activity.pausedUntil = settings.pausedUntil
+        schedulePauseEnd()
+        if demo {
+            activity.pausedUntil = .distantFuture // Not saved: the next launch listens as usual.
             start(.demo)
-        } else if settings.didShowWelcome {
-            start(.system)
-        } else {
+        } else if !settings.didShowWelcome {
             showWelcome()
+        } else {
+            autoStart()
         }
+        render()
         if Self.flag("open") { showMainWindow() }
         if Self.flag("welcome") { showWelcome() }
+        scheduleUpdateCheck()
+    }
+
+    /// Opening Taptone again, from Finder or Spotlight, shows its window: the way back in when the
+    /// menu bar hides its icon.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showMainWindow()
+        return false
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
@@ -123,6 +158,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
     func applicationWillTerminate(_ notification: Notification) {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         DistributedNotificationCenter.default().removeObserver(self)
+        hotKey.unregister()
     }
 
     private func finishQuit() {
@@ -139,31 +175,61 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
 
     // MARK: Session
 
+    /// Listening that starts by itself: at launch, after wake, after a pause or a call. It holds back
+    /// while paused, locked, in a demo or kick test, or during a call.
+    private func autoStart() {
+        // A timer can fire late, as after sleep; a pause that has run out is over.
+        if let until = activity.pausedUntil, until <= .now { endPause() }
+        guard quitTask == nil, settings.didShowWelcome, !activity.isPaused, !screenLocked,
+              !activity.phase.isLive, activity.phase != .preview else { return }
+        // The kick test has the motor; listening picks up when it ends.
+        if kickTest != nil {
+            resumesAfterKickTest = true
+            return
+        }
+        if settings.pausesDuringCalls, surroundings.state.microphoneInUse {
+            activity.inCall = true
+            return render()
+        }
+        start(.system)
+    }
+
     private func start(_ source: CaptureEngine.Source) {
         guard quitTask == nil else { return }
         stop(updateMenu: false)
-        let id = UUID()
-        sessionID = id
+        activity.inCall = false
         activity.history = ActivityHistory()
-        activity.phase = source == .system ? .starting : .preview
+        let id = UUID()
+        var consumePCM: CaptureEngine.ConsumePCM?
         // The demo is visual only: it never drives the trackpad.
         if source == .system {
             let output = makeOutput { [weak self] in self?.motorFailed(id) }
             activity.device = output.device
             if diagnostics, let device = output.device {
-                log.info("Output \(device.name, privacy: .public) reports \(Double(device.latencyNs) / 1e6, format: .fixed(precision: 1), privacy: .public) ms; motor: \(output.usesMotor, privacy: .public)")
+                log.info("Output \(device.name, privacy: .public) reports \(Double(device.latencyNs) / 1e6, format: .fixed(precision: 1), privacy: .public) ms; mode: \(String(describing: output.mode), privacy: .public)")
             }
-            if output.usesMotor {
-                let timer = Timer(timeInterval: 1 / 12, repeats: true) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.refreshLive() }
-                }
-                RunLoop.main.add(timer, forMode: .common) // Keep ticking while the menu is open.
-                liveTimer = timer
+            guard output.mode != .none else {
+                self.output = nil
+                activity.phase = .noTrackpad
+                render()
+                return retryTrackpad()
             }
+            trackpadRetries = 0
+            consumePCM = output.consumePCM
+        }
+        sessionID = id
+        ignoredApps = Set(settings.ignoredApps)
+        activity.phase = source == .system ? .starting : .preview
+        if activity.usesMotor || source == .demo {
+            let timer = Timer(timeInterval: 1 / 12, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.refreshLive() }
+            }
+            RunLoop.main.add(timer, forMode: .common) // Keep ticking while the menu is open.
+            liveTimer = timer
         }
         render()
-        engine.start(id: id, source: source, sensitivity: settings.sensitivity,
-                     consumePCM: output?.consumePCM) { [weak self] event in
+        engine.start(id: id, source: source, sensitivity: settings.sensitivity, ignoring: ignoredApps,
+                     consumePCM: consumePCM) { [weak self] event in
             DispatchQueue.main.async { self?.receive(event, from: id) }
         }
     }
@@ -207,10 +273,9 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
         }
     }
 
-    /// Twelve times a second while listening: the motor's live state for the window, header, and icon.
+    /// Twelve times a second while listening or in the demo: the live state for the window, header, and icon.
     private func refreshLive() {
-        guard let reading = output?.reading() else { return }
-        activity.update(live: reading)
+        if let reading = output?.reading() { activity.update(live: reading) }
         renderIcon()
         header.update(activity, settings: settings)
     }
@@ -221,7 +286,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
         reconnects = reconnects.filter { now.timeIntervalSince($0) < 60 } + [now]
         guard reconnects.count <= 3 else {
             reconnects = []
-            return fail("\(reason) Start listening again when your audio output is ready.")
+            return fail("\(reason) Press play when your audio output is ready.")
         }
         if diagnostics { log.info("Reconnecting: \(reason, privacy: .public)") }
         stop(updateMenu: false)
@@ -231,6 +296,19 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             guard let self, self.activity.phase == .starting, self.sessionID == nil else { return }
             self.start(.system)
+        }
+    }
+
+    /// Looks for the trackpad again after 2, 4, and 6 seconds, then waits for play.
+    private func retryTrackpad() {
+        guard trackpadRetries < 3 else {
+            trackpadRetries = 0
+            return
+        }
+        trackpadRetries += 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(2 * trackpadRetries)) { [weak self] in
+            guard let self, self.activity.phase == .noTrackpad else { return }
+            self.autoStart()
         }
     }
 
@@ -247,7 +325,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
 
     /// The trackpad output for a session or the kick test. `onFailure` runs on the main actor.
     private func makeOutput(onFailure: @escaping @MainActor () -> Void) -> TrackpadOutput {
-        let output = TrackpadOutput(settings: settings) {
+        let output = TrackpadOutput(settings: settings, surroundings: surroundings.state) {
             DispatchQueue.main.async { MainActor.assumeIsolated(onFailure) }
         }
         self.output = output
@@ -257,8 +335,88 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
 
     private func settingsChanged() {
         output?.apply(settings)
-        if let sessionID { engine.setSensitivity(settings.sensitivity, id: sessionID) }
+        if let sessionID {
+            engine.setSensitivity(settings.sensitivity, id: sessionID)
+            if Set(settings.ignoredApps) != ignoredApps {
+                ignoredApps = Set(settings.ignoredApps)
+                engine.ignore(ignoredApps, id: sessionID)
+            }
+        }
+        if !settings.pausesDuringCalls, activity.inCall {
+            activity.inCall = false
+            autoStart()
+        }
+        applyShortcut()
+        if settings.checksForUpdates != (updateTimer != nil) { scheduleUpdateCheck() }
         render()
+    }
+
+    /// Volume, mute, and calls.
+    private func surroundingsChanged(_ state: AudioSurroundings.State) {
+        if diagnostics {
+            log.info("Volume \(state.volume ?? -1, privacy: .public), muted \(state.isMuted, privacy: .public), microphone in use \(state.microphoneInUse, privacy: .public)")
+        }
+        output?.follow(state)
+        let callStarted = state.microphoneInUse && !microphoneWasInUse
+        let callEnded = !state.microphoneInUse && microphoneWasInUse
+        microphoneWasInUse = state.microphoneInUse
+        if callStarted, settings.pausesDuringCalls, activity.phase.isLive {
+            stop(updateMenu: false)
+            activity.inCall = true
+            render()
+        } else if callEnded, activity.inCall {
+            activity.inCall = false
+            autoStart()
+            render()
+        }
+    }
+
+    // MARK: Pause
+
+    @objc private func toggleHaptics() {
+        if activity.phase == .preview { return stop() }
+        if activity.phase.isLive {
+            pause(until: .distantFuture)
+        } else {
+            endPause()
+            start(.system)
+        }
+    }
+
+    @objc private func pauseForAnHour() { pause(until: .now.addingTimeInterval(60 * 60)) }
+
+    private func pause(until date: Date) {
+        activity.pausedUntil = date
+        settings.pausedUntil = date
+        stop()
+        schedulePauseEnd()
+    }
+
+    private func endPause() {
+        pauseTimer?.invalidate()
+        pauseTimer = nil
+        activity.pausedUntil = nil
+        if settings.pausedUntil != nil { settings.pausedUntil = nil }
+    }
+
+    private func schedulePauseEnd() {
+        pauseTimer?.invalidate()
+        pauseTimer = nil
+        guard let until = activity.pausedUntil, until != .distantFuture else { return }
+        let timer = Timer(fire: until, interval: 0, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.activity.pausedUntil == until else { return }
+                self.endPause()
+                self.autoStart()
+                self.render()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        pauseTimer = timer
+    }
+
+    private func applyShortcut() {
+        if settings.pauseShortcut { hotKey.register() } else { hotKey.unregister() }
     }
 
     // MARK: Kick test
@@ -271,9 +429,17 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
             return resumeAfterKickTest()
         }
         resumesAfterKickTest = activity.phase.isLive
-        if case .failed = activity.phase { failureBeforeKickTest = activity.phase } else { failureBeforeKickTest = nil }
+        switch activity.phase {
+        case .failed, .noTrackpad: failureBeforeKickTest = activity.phase
+        default: failureBeforeKickTest = nil
+        }
         stop()
         let output = makeOutput { [weak self] in self?.kickTestFailed() }
+        guard output.mode != .none else {
+            self.output = nil
+            activity.kickTest = .noTrackpad
+            return resumeAfterKickTest()
+        }
         activity.kickTest = .running(sent: 0)
         kickTest = Task { [weak self] in
             try? await KickTest.run { number in
@@ -292,7 +458,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
         defer { failureBeforeKickTest = nil }
         if resumesAfterKickTest {
             resumesAfterKickTest = false
-            start(.system)
+            autoStart()
         } else if let failure = failureBeforeKickTest {
             activity.phase = failure
             render()
@@ -306,6 +472,48 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
         resumeAfterKickTest()
     }
 
+    // MARK: Updates
+
+    /// Once a day, counted from the last check, so relaunching doesn't check again.
+    private func scheduleUpdateCheck() {
+        updateTimer?.invalidate()
+        updateTimer = nil
+        guard settings.checksForUpdates else { return }
+        let due = (settings.lastUpdateCheck ?? .distantPast).addingTimeInterval(UpdateChecker.interval)
+        let timer = Timer(timeInterval: max(15, due.timeIntervalSinceNow), repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkQuietly() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        updateTimer = timer
+    }
+
+    private func checkQuietly() {
+        Task {
+            if case .available(let release) = await UpdateChecker.check() {
+                activity.availableUpdate = release
+                render()
+            }
+            settings.lastUpdateCheck = .now
+            scheduleUpdateCheck()
+        }
+    }
+
+    @objc private func checkForUpdates() {
+        if let release = activity.availableUpdate { return UpdateChecker.present(release) }
+        Task {
+            let outcome = await UpdateChecker.check()
+            settings.lastUpdateCheck = .now
+            switch outcome {
+            case .available(let release):
+                activity.availableUpdate = release
+                render()
+                UpdateChecker.present(release)
+            case .upToDate: UpdateChecker.presentUpToDate()
+            case .failed: UpdateChecker.presentFailure()
+            }
+        }
+    }
+
     // MARK: Menu
 
     private func render() {
@@ -313,8 +521,11 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
         statusItem.button?.toolTip = status
         statusItem.button?.setAccessibilityLabel(status)
         renderIcon()
+        updateItem.isHidden = activity.availableUpdate == nil
+        updateItem.title = activity.availableUpdate.map { "Update Available: \($0.version)…" } ?? "Update Available…"
         accessItem.isHidden = !activity.needsAudioAccess
-        previewItem.title = activity.phase == .preview ? "Stop demo" : "Preview demo"
+        pauseHourItem.isHidden = !activity.phase.isLive
+        previewItem.title = activity.phase == .preview ? "Stop Demo" : "Preview Demo"
         previewItem.isEnabled = !activity.phase.isLive
         header.update(activity, settings: settings)
     }
@@ -329,15 +540,10 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
             NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
                 ? .listening(step: 1) : .listening(step: min(3, Int((activity.live?.body ?? 0) * 4)))
         case .preview: .demo
-        case .failed: .failed
+        case .failed, .noTrackpad: .failed
         }
         let image = TouchIcon.image(state)
         if statusItem.button?.image !== image { statusItem.button?.image = image }
-    }
-
-    @objc private func toggleHaptics() {
-        activity.isPaused = activity.phase.isLive
-        if activity.isPaused { stop() } else { start(.system) }
     }
 
     @objc private func togglePreview() {
@@ -349,24 +555,45 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
 
     @objc private func showWelcome() {
         welcomeStartsListening = !settings.didShowWelcome
-        welcomeWindow.delegate = self
-        present(welcomeWindow)
+        let view = WelcomeView(activity: activity, firstRun: welcomeStartsListening, actions: .init(
+            toggleKickTest: { [weak self] in self?.toggleKickTest() },
+            openTrackpadSettings: { NSWorkspace.shared.open(Self.trackpadSettings) },
+            start: { [weak self] in self?.welcomeWindow?.close() }
+        ))
+        if let welcomeWindow {
+            welcomeWindow.contentViewController = hosting(view)
+        } else {
+            let window = window("Welcome to Taptone", view, showsTitle: false)
+            window.delegate = self
+            welcomeWindow = window
+        }
+        present(welcomeWindow!)
     }
 
-    private func closeWelcome() { welcomeWindow.close() }
+    @objc private func showAbout() {
+        NSApp.activate()
+        NSApp.orderFrontStandardAboutPanel(nil)
+    }
 
     func windowWillClose(_ notification: Notification) {
+        // Back to a menu bar app, without a Dock icon, once its last window closes. A minimized
+        // window still counts: it's in the Dock.
+        DispatchQueue.main.async { [weak self] in
+            guard !NSApp.windows.contains(where: { ($0.isVisible || $0.isMiniaturized) && $0.delegate === self }) else { return }
+            NSApp.setActivationPolicy(.accessory)
+        }
         guard notification.object as? NSWindow === welcomeWindow else { return }
         // Seen once it's closed, so quitting during the first welcome shows it again next time.
         if !settings.didShowWelcome { settings.didShowWelcome = true }
-        if case .running = activity.kickTest {
+        // The welcome's kick test ends with it; one run from the main window carries on.
+        if case .running = activity.kickTest, NSApp.windows.first(where: { $0.delegate === self && $0 !== welcomeWindow })?.isVisible != true {
             stop()
             resumeAfterKickTest()
         }
         guard welcomeStartsListening else { return }
         welcomeStartsListening = false
         // A pause set while the first welcome was open still holds.
-        if !activity.isPaused, !activity.phase.isLive { start(.system) }
+        autoStart()
     }
 
     @objc private func openPrivacySettings() { NSWorkspace.shared.open(Self.privacySettings) }
@@ -390,14 +617,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
     @objc private func resume() {
         let suspensionsAtWake = suspensions
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-            guard let self, suspensionsAtWake == self.suspensions, !self.screenLocked, !self.activity.isPaused,
-                  !self.activity.phase.isLive, self.activity.phase != .preview, !self.welcomeStartsListening else { return }
-            // A kick test started meanwhile resumes listening when it ends.
-            if self.kickTest != nil {
-                self.resumesAfterKickTest = true
-                return
-            }
-            self.start(.system)
+            guard let self, suspensionsAtWake == self.suspensions, !self.welcomeStartsListening else { return }
+            self.autoStart()
         }
     }
 
@@ -415,19 +636,48 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
 
     // MARK: Building blocks
 
+    /// The app menu, so ⌘W, ⌘M, ⌘Q, and ⌘, work while one of Taptone's windows is in front.
+    private func installMainMenu() {
+        let app = NSMenu()
+        app.addItem(item("About Taptone", #selector(showAbout)))
+        app.addItem(item("Check for Updates…", #selector(checkForUpdates)))
+        app.addItem(.separator())
+        app.addItem(item("Settings…", #selector(showMainWindow), key: ","))
+        app.addItem(.separator())
+        app.addItem(NSMenuItem(title: "Hide Taptone", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"))
+        app.addItem(item("Quit Taptone", #selector(quit), key: "q"))
+        let window = NSMenu(title: "Window")
+        window.addItem(NSMenuItem(title: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
+        window.addItem(NSMenuItem(title: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m"))
+        let main = NSMenu()
+        for (title, submenu) in [("Taptone", app), ("Window", window)] {
+            let top = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            top.submenu = submenu
+            main.addItem(top)
+        }
+        NSApp.mainMenu = main
+        NSApp.windowsMenu = window
+    }
+
+    /// Shows a window, with a Dock icon while it's open so ⌘Tab can find it.
     private func present(_ window: NSWindow) {
         // Let the status menu finish closing before handing focus to the window.
         DispatchQueue.main.async {
+            NSApp.setActivationPolicy(.regular)
             if window.isMiniaturized { window.deminiaturize(nil) }
             NSApp.activate()
             window.makeKeyAndOrderFront(nil)
         }
     }
 
-    private func window<Content: View>(_ title: String, _ view: Content, showsTitle: Bool) -> NSWindow {
+    private func hosting<Content: View>(_ view: Content) -> NSHostingController<Content> {
         let host = NSHostingController(rootView: view)
         host.sizingOptions = .preferredContentSize
-        let window = NSWindow(contentViewController: host)
+        return host
+    }
+
+    private func window<Content: View>(_ title: String, _ view: Content, showsTitle: Bool) -> NSWindow {
+        let window = NSWindow(contentViewController: hosting(view))
         window.title = title
         window.styleMask = [.titled, .closable, .miniaturizable, .fullSizeContentView]
         window.isReleasedWhenClosed = false

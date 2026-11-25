@@ -16,20 +16,28 @@ struct CaptureFailure: LocalizedError {
     static func check(_ status: OSStatus, _ operation: String) throws {
         guard status != noErr else { return }
         if status == kAudioDevicePermissionsError {
-            throw Self("Allow Taptone to record system audio in System Settings, then try again.", needsAccess: true)
+            throw Self("Allow Taptone to record system audio in Privacy & Security, then try again.", needsAccess: true)
         }
         let bytes = (0..<4).reversed().map { UInt8(truncatingIfNeeded: UInt32(bitPattern: status) >> ($0 * 8)) }
         let code = bytes.allSatisfy { (33...126).contains($0) } ? String(decoding: bytes, as: UTF8.self) : String(status)
-        throw Self("Couldn’t \(operation) (\(code)).")
+        Logger(subsystem: "com.theiskaa.taptone", category: "CoreAudio").error("Couldn’t \(operation, privacy: .public): \(code, privacy: .public)")
+        throw Self("Taptone couldn’t start listening. Try again, or restart your Mac if it keeps happening.")
     }
 }
 
-/// Owns a private tap and aggregate. Setup and teardown both run on the capture queue.
-final class SystemAudioTap {
+/// Owns a private tap and aggregate. Setup, changes, and teardown all run on the capture queue, which is
+/// also where its listeners call back; that queue is what makes it safe to share.
+final class SystemAudioTap: @unchecked Sendable {
     let mailbox: TapMailbox
     private let hal: CaptureHAL
     private(set) var sampleRate = 0.0
     private var prepared: (device: AudioObjectID, callback: AudioDeviceIOProcID)?
+    private var tap: (id: AudioObjectID, description: CATapDescription)?
+    /// Apps left out of the tap, by bundle ID; a helper such as `com.google.Chrome.helper` goes with its app.
+    private var ignoredApps: Set<String> = []
+    private var ignoredProcesses: [AudioObjectID] = []
+    /// macOS alert sounds: they'd otherwise land as kicks.
+    private static let alertSounds = "systemsoundserverd"
     private var teardown = CaptureTeardown()
     private static let system = AudioObjectID(kAudioObjectSystemObject)
     private static let logger = Logger(subsystem: "com.theiskaa.taptone", category: "CoreAudio")
@@ -40,9 +48,11 @@ final class SystemAudioTap {
         self.hal = hal
     }
 
-    func prepare(queue: DispatchQueue, onRouteChange: @escaping @Sendable () -> Void) throws {
-        let excluded = currentProcess().map { [$0] } ?? []
-        let description = CATapDescription(stereoGlobalTapButExcludeProcesses: excluded)
+    func prepare(queue: DispatchQueue, ignoring apps: Set<String>,
+                 onRouteChange: @escaping @Sendable () -> Void) throws {
+        ignoredApps = apps
+        ignoredProcesses = processesToIgnore()
+        let description = CATapDescription(stereoGlobalTapButExcludeProcesses: ignoredProcesses)
         description.name = "Taptone System Audio"
         description.isPrivate = true
         description.muteBehavior = .unmuted
@@ -50,11 +60,9 @@ final class SystemAudioTap {
         try CaptureFailure.check(hal.createTap(description, &tapID), "create the system audio tap")
         let tap = tapID
         teardown.acquired("destroy audio tap") { [release = hal.destroyTap] in release(tap) }
+        self.tap = (tap, description)
 
-        var format = AudioStreamBasicDescription()
-        var formatSize = UInt32(MemoryLayout.size(ofValue: format))
-        var formatAddress = Self.address(kAudioTapPropertyFormat)
-        try CaptureFailure.check(hal.readProperty(tap, &formatAddress, 0, nil, &formatSize, &format), "read the tap format")
+        let format = try readFormat(tap)
         let floatPacked = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked
         guard format.mFormatID == kAudioFormatLinearPCM,
               format.mFormatFlags & floatPacked == floatPacked,
@@ -91,8 +99,48 @@ final class SystemAudioTap {
         teardown.acquired("remove audio callback") { [release = hal.destroyIO] in release(aggregate, io) }
 
         try listen(Self.system, kAudioHardwarePropertyDefaultOutputDevice, queue: queue, callback: onRouteChange)
-        try listen(tap, kAudioTapPropertyFormat, queue: queue, callback: onRouteChange)
+        // Changing the ignored apps also notifies the format; only a real change means a new output.
+        try listen(tap, kAudioTapPropertyFormat, queue: queue) { [weak self] in
+            guard let self, let current = try? self.readFormat(tap),
+                  current.mSampleRate != format.mSampleRate || current.mChannelsPerFrame != format.mChannelsPerFrame else { return }
+            onRouteChange()
+        }
+        // An ignored app that starts playing later has no audio process yet, so add it when it appears.
+        try listen(Self.system, kAudioHardwarePropertyProcessObjectList, queue: queue) { [weak self] in
+            self?.applyIgnored()
+        }
         prepared = (aggregate, io)
+    }
+
+    /// Changes the apps left out, without restarting. Call on the capture queue.
+    func ignore(_ apps: Set<String>) {
+        ignoredApps = apps
+        applyIgnored()
+    }
+
+    private func applyIgnored() {
+        let processes = processesToIgnore()
+        guard processes != ignoredProcesses, let tap else { return }
+        ignoredProcesses = processes
+        tap.description.processes = processes
+        // The property holds a reference to the description object.
+        var description = Unmanaged.passUnretained(tap.description).toOpaque()
+        var address = Self.address(kAudioTapPropertyDescription)
+        let status = withExtendedLifetime(tap.description) {
+            hal.writeProperty(tap.id, &address, 0, nil, UInt32(MemoryLayout.size(ofValue: description)), &description)
+        }
+        if status != noErr { Self.logger.error("Couldn’t update the ignored apps: \(status)") }
+    }
+
+    /// Taptone itself, alert sounds, and the ignored apps' audio processes.
+    private func processesToIgnore() -> [AudioObjectID] {
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        return processes().filter { process in
+            if pid(of: process) == ownPID { return true }
+            guard let bundleID = bundleID(of: process) else { return false }
+            return bundleID == Self.alertSounds
+                || ignoredApps.contains { bundleID == $0 || bundleID.hasPrefix($0 + ".") }
+        }.sorted()
     }
 
     func start() throws {
@@ -101,37 +149,33 @@ final class SystemAudioTap {
         teardown.acquired("stop audio") { [release = hal.stopIO] in release(device, callback) }
     }
 
-    /// Whether another app is playing audio right now. Per-process, so an app using only a headset's
-    /// microphone doesn't count, and Taptone itself never does.
+    /// Whether an app Taptone listens to is playing audio right now. Per-process, so an app using only
+    /// a headset's microphone doesn't count, and neither do Taptone, alert sounds, or ignored apps.
     var isOutputPlaying: Bool {
-        var size: UInt32 = 0
-        var address = Self.address(kAudioHardwarePropertyProcessObjectList)
-        guard hal.propertySize(Self.system, &address, 0, nil, &size) == noErr, size > 0 else { return false }
-        var processes = [AudioObjectID](repeating: kAudioObjectUnknown, count: Int(size) / MemoryLayout<AudioObjectID>.size)
-        guard hal.readProperty(Self.system, &address, 0, nil, &size, &processes) == noErr else { return false }
-        let ownPID = ProcessInfo.processInfo.processIdentifier
-        return processes.prefix(Int(size) / MemoryLayout<AudioObjectID>.size).contains { process in
-            var running: UInt32 = 0
-            var runningSize = UInt32(MemoryLayout.size(ofValue: running))
-            var runningAddress = Self.address(kAudioProcessPropertyIsRunningOutput)
-            guard hal.readProperty(process, &runningAddress, 0, nil, &runningSize, &running) == noErr, running != 0 else {
-                return false
-            }
-            var pid: pid_t = 0
-            var pidSize = UInt32(MemoryLayout.size(ofValue: pid))
-            var pidAddress = Self.address(kAudioProcessPropertyPID)
-            return hal.readProperty(process, &pidAddress, 0, nil, &pidSize, &pid) != noErr || pid != ownPID
+        let ignored = Set(ignoredProcesses)
+        return processes().contains { process in
+            !ignored.contains(process) && read(process, kAudioProcessPropertyIsRunningOutput, as: UInt32.self).map { $0 != 0 } == true
+                && pid(of: process) != ProcessInfo.processInfo.processIdentifier
         }
     }
 
     func stop() -> [CaptureCleanupIssue] {
         prepared = nil
+        tap = nil
         sampleRate = 0
         let issues = teardown.run()
         for issue in issues {
             Self.logger.error("Couldn’t \(issue.operation, privacy: .public): \(issue.status)")
         }
         return issues
+    }
+
+    private func readFormat(_ tap: AudioObjectID) throws -> AudioStreamBasicDescription {
+        var format = AudioStreamBasicDescription()
+        var size = UInt32(MemoryLayout.size(ofValue: format))
+        var address = Self.address(kAudioTapPropertyFormat)
+        try CaptureFailure.check(hal.readProperty(tap, &address, 0, nil, &size, &format), "read the tap format")
+        return format
     }
 
     private func tapUID(_ tap: AudioObjectID) throws -> String {
@@ -143,14 +187,36 @@ final class SystemAudioTap {
         return uid.takeRetainedValue() as String
     }
 
-    private func currentProcess() -> AudioObjectID? {
-        var pid = ProcessInfo.processInfo.processIdentifier
-        var object: AudioObjectID = kAudioObjectUnknown
-        var size = UInt32(MemoryLayout.size(ofValue: object))
-        var address = Self.address(kAudioHardwarePropertyTranslatePIDToProcessObject)
-        let status = hal.readProperty(Self.system, &address, UInt32(MemoryLayout.size(ofValue: pid)), &pid, &size, &object)
-        // A process with no audio I/O may have no HAL object yet. Taptone produces no audio.
-        return status == noErr && object != kAudioObjectUnknown ? object : nil
+    private func processes() -> [AudioObjectID] {
+        var size: UInt32 = 0
+        var address = Self.address(kAudioHardwarePropertyProcessObjectList)
+        guard hal.propertySize(Self.system, &address, 0, nil, &size) == noErr, size > 0 else { return [] }
+        var processes = [AudioObjectID](repeating: kAudioObjectUnknown, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+        guard hal.readProperty(Self.system, &address, 0, nil, &size, &processes) == noErr else { return [] }
+        return Array(processes.prefix(Int(size) / MemoryLayout<AudioObjectID>.size))
+    }
+
+    private func pid(of process: AudioObjectID) -> pid_t? {
+        read(process, kAudioProcessPropertyPID, as: pid_t.self)
+    }
+
+    private func bundleID(of process: AudioObjectID) -> String? {
+        var value: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout.size(ofValue: value))
+        var address = Self.address(kAudioProcessPropertyBundleID)
+        guard hal.readProperty(process, &address, 0, nil, &size, &value) == noErr, let value else { return nil }
+        let id = value.takeRetainedValue() as String
+        return id.isEmpty ? nil : id
+    }
+
+    private func read<Value>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, as _: Value.Type) -> Value? {
+        var address = Self.address(selector)
+        var size = UInt32(MemoryLayout<Value>.size)
+        let value = UnsafeMutableRawPointer.allocate(byteCount: MemoryLayout<Value>.size, alignment: MemoryLayout<Value>.alignment)
+        defer { value.deallocate() }
+        guard hal.readProperty(object, &address, 0, nil, &size, value) == noErr,
+              size == UInt32(MemoryLayout<Value>.size) else { return nil }
+        return value.load(as: Value.self)
     }
 
     private func listen(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector,

@@ -29,7 +29,7 @@
     <key>LSUIElement</key>
     <true/>
     <key>NSAudioCaptureUsageDescription</key>
-    <string>Taptone listens to audio already playing on your Mac to find beats. Audio stays on this Mac and is never saved.</string>
+    <string>Taptone listens to audio playing on your Mac to find the bass and kicks it plays on your trackpad. Audio stays on this Mac and is never saved.</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>

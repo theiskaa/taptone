@@ -213,7 +213,7 @@ import Testing
         switch (outputPlaying, sendsSilentPCM) {
         case (false, _): #expect(observed.allSatisfy { $0 == "quiet" })
         case (true, true): #expect(observed.last?.hasPrefix("interrupted: The audio stream stopped.") == true)
-        case (true, false): #expect(observed.last?.hasPrefix("failed: No audio data arrived.") == true)
+        case (true, false): #expect(observed.last?.hasPrefix("failed: Taptone can’t hear system audio.") == true)
         }
     }
 
@@ -331,9 +331,11 @@ private final class TestTap: CaptureTap {
         onStop = stop
     }
 
-    func prepare(queue: DispatchQueue, onRouteChange: @escaping @Sendable () -> Void) throws {
+    func prepare(queue: DispatchQueue, ignoring apps: Set<String>, onRouteChange: @escaping @Sendable () -> Void) throws {
         try onPrepare(queue, onRouteChange)
     }
+
+    func ignore(_ apps: Set<String>) {}
 
     func start() throws { try onStart(mailbox) }
     func stop() -> [CaptureCleanupIssue] { onStop() }

@@ -10,6 +10,8 @@ final class ActivityModel {
     enum Phase: Equatable {
         /// `needsAccess`: allowing system audio recording would likely fix the failure.
         case off, starting, listening(hasSound: Bool), preview, failed(String, needsAccess: Bool)
+        /// The Mac has no Force Touch trackpad to play on.
+        case noTrackpad
 
         var isLive: Bool {
             switch self {
@@ -20,7 +22,7 @@ final class ActivityModel {
     }
 
     enum KickTestState: Equatable {
-        case idle, running(sent: Int), finished, failed
+        case idle, running(sent: Int), finished, failed, noTrackpad
     }
 
     struct Note: Equatable {
@@ -29,8 +31,11 @@ final class ActivityModel {
     }
 
     var phase = Phase.off
-    /// Paused from the switch: stays off until resumed or relaunched.
-    var isPaused = false
+    /// When the pause from the switch ends: `.distantFuture` until resumed, nil when not paused.
+    var pausedUntil: Date?
+    var isPaused: Bool { pausedUntil != nil }
+    /// Paused by itself while an app uses the microphone; listening picks up again after.
+    var inCall = false
     var history = ActivityHistory()
     /// Kicks play on the trackpad motor rather than as AppKit taps.
     var usesMotor = false
@@ -40,6 +45,8 @@ final class ActivityModel {
     /// The bass note on show. The player already holds a note through a moment without pitch.
     private(set) var note: Note?
     var kickTest = KickTestState.idle
+    /// A newer version on GitHub, once a check finds one.
+    var availableUpdate: UpdateChecker.Release?
 
     func update(live reading: HapticPlayer.Reading?) {
         live = reading
@@ -53,27 +60,43 @@ final class ActivityModel {
 
     var title: String {
         switch phase {
-        case .off: isPaused ? "Paused" : "Not listening"
-        case .starting: "Connecting…"
-        case .listening(true): usesMotor ? "Listening" : "Standard taps"
+        case .off where isPaused: "Paused"
+        case .off where inCall: "Paused for a call"
+        case .off: "Not listening"
+        case .starting: "Starting…"
+        case .listening(true): usesMotor ? "Listening" : "Listening, taps only"
         case .listening(false): "Waiting for audio"
         case .preview: "Demo"
         case .failed(_, true): "Can’t hear system audio"
-        case .failed(_, false): "Stopped"
+        case .failed(_, false): "Stopped listening"
+        case .noTrackpad: "No Force Touch trackpad"
         }
     }
 
-    /// The title with the output it applies to, for the menu.
+    /// The title with the output it applies to, or how long a pause lasts, for the menu.
     var summary: String {
         switch phase {
         case .starting, .listening: device.map { "\(title) on \($0.name)" } ?? title
         case .preview: "Demo, no haptics"
+        case .off: pauseEnd.map { "Paused until \($0)" } ?? title
         default: title
         }
     }
 
+    /// The time a timed pause ends, as the clock shows it.
+    var pauseEnd: String? {
+        guard let pausedUntil, pausedUntil != .distantFuture else { return nil }
+        return pausedUntil.formatted(date: .omitted, time: .shortened)
+    }
+
     var needsAudioAccess: Bool {
         if case .failed(_, true) = phase { true } else { false }
+    }
+
+    /// 0...1 for drawing without the motor: each kick swells and fades.
+    func kickLevel(now: UInt64) -> Double {
+        guard let lastKick = history.samples.last(where: { $0.kicks > 0 })?.timeNs, now >= lastKick else { return 0 }
+        return 0.85 * exp(-Double(now - lastKick) / 1e9 / 0.25)
     }
 
     static func noteName(_ hertz: Double) -> String {

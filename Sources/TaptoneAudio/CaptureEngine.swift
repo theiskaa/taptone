@@ -75,7 +75,8 @@ public final class CaptureEngine: @unchecked Sendable {
         self.makeTap = makeTap
     }
 
-    public func start(id: UUID, source: Source, sensitivity: BeatDetector.Sensitivity,
+    /// `ignoring`: bundle IDs of apps whose audio Taptone leaves out.
+    public func start(id: UUID, source: Source, sensitivity: BeatDetector.Sensitivity, ignoring apps: Set<String> = [],
                       consumePCM: ConsumePCM? = nil, report: @escaping Report) {
         enqueue(updating: { $0 = id }) { [self] in
             guard isRequested(id) else { return }
@@ -91,7 +92,7 @@ public final class CaptureEngine: @unchecked Sendable {
                     let tap = try makeTap()
                     next.tap = tap
                     guard isRequested(id) else { end(); return }
-                    try tap.prepare(queue: queue) { [weak self] in
+                    try tap.prepare(queue: queue, ignoring: apps) { [weak self] in
                         self?.fail(id, "Audio output changed.", interrupted: true)
                     }
                     guard isRequested(id) else { end(); return }
@@ -120,6 +121,13 @@ public final class CaptureEngine: @unchecked Sendable {
             guard let session, session.id == id else { return }
             session.sensitivity = sensitivity
             session.detector?.sensitivity = sensitivity
+        }
+    }
+
+    public func ignore(_ apps: Set<String>, id: UUID) {
+        queue.async { [self] in
+            guard let session, session.id == id else { return }
+            session.tap?.ignore(apps)
         }
     }
 
@@ -175,7 +183,7 @@ public final class CaptureEngine: @unchecked Sendable {
                     let first = session.lastBufferAt == nil
                     if now - since >= (first ? timeouts.firstBufferNs : timeouts.stalledStreamNs) {
                         if first {
-                            fail(id, "No audio data arrived. Check system audio access in Privacy & Security, then try again.",
+                            fail(id, "Taptone can’t hear system audio. Allow it in Privacy & Security, then try again.",
                                  needsAccess: true)
                         } else {
                             fail(id, "The audio stream stopped.", interrupted: true)
@@ -218,7 +226,9 @@ protocol CaptureTap: AnyObject {
     var sampleRate: Double { get }
     /// Whether another app is playing audio right now, on any device.
     var isOutputPlaying: Bool { get }
-    func prepare(queue: DispatchQueue, onRouteChange: @escaping @Sendable () -> Void) throws
+    func prepare(queue: DispatchQueue, ignoring apps: Set<String>, onRouteChange: @escaping @Sendable () -> Void) throws
+    /// Changes the apps left out while capturing. Called on the capture queue.
+    func ignore(_ apps: Set<String>)
     func start() throws
     func stop() -> [CaptureCleanupIssue]
 }

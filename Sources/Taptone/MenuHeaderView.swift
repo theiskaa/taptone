@@ -15,7 +15,7 @@ final class MenuHeaderView: NSView {
     private let wave = WaveView()
     private let note = NSTextField(labelWithString: "")
     private let intensity = MenuSegments(HapticIntensity.allCases.map { $0.rawValue.capitalized }, name: "Intensity")
-    private let sensitivity = MenuSegments(BeatDetector.Sensitivity.allCases.map { $0.rawValue.capitalized }, name: "Kick sensitivity")
+    private let sensitivity = MenuSegments(BeatDetector.Sensitivity.allCases.map(\.title), name: "Kicks")
     private let stack = NSStackView()
 
     init(settings: Settings, toggle: @escaping () -> Void) {
@@ -88,15 +88,19 @@ final class MenuHeaderView: NSView {
 
     func update(_ activity: ActivityModel, settings: Settings) {
         status.stringValue = activity.summary
-        status.textColor = { if case .failed = activity.phase { NSColor.systemOrange } else { .secondaryLabelColor } }()
+        status.textColor = switch activity.phase {
+        case .failed, .noTrackpad: .systemOrange
+        default: .secondaryLabelColor
+        }
         onOff.isOn = activity.phase.isLive
         intensity.selected = HapticIntensity.allCases.firstIndex(of: settings.intensity) ?? 1
         intensity.isEnabled = activity.usesMotor // Standard taps have one fixed strength.
         sensitivity.selected = BeatDetector.Sensitivity.allCases.firstIndex(of: settings.sensitivity) ?? 1
 
-        // The row always stays; a flat line means nothing is playing on the trackpad.
+        // The row always stays; a flat line means nothing is playing on the trackpad. The demo has
+        // no motor, so its wave swells with each generated kick.
         let live = activity.phase.isLive ? activity.live : nil
-        wave.level = live?.shownLevel ?? 0
+        wave.level = activity.phase == .preview ? activity.kickLevel(now: HostClock.nowNs()) : live?.shownLevel ?? 0
         wave.carrierHz = live?.carrierHz ?? HapticSynth.restingHz
         wave.needsDisplay = true
         let text = liveText(activity, live)
@@ -107,6 +111,7 @@ final class MenuHeaderView: NSView {
     }
 
     private func liveText(_ activity: ActivityModel, _ live: HapticPlayer.Reading?) -> String {
+        if activity.phase == .preview { return "Demo" }
         guard activity.phase.isLive else { return "—" }
         guard activity.usesMotor else { return "Kicks only" }
         guard let live, live.body >= HapticSynth.bodyGate else { return "No bass" }

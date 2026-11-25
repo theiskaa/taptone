@@ -14,8 +14,9 @@ public final class TrackpadActuator: HapticOutput, @unchecked Sendable {
     private let devices: CFArray
     private var isOpen = true
 
-    /// Opens the built-in trackpad's motor, or the first external Force Touch trackpad.
-    public static func open() -> TrackpadActuator? {
+    /// Opens the built-in trackpad's motor, or the first external Force Touch trackpad. With
+    /// `preferExternal`, as when the lid is closed, an external trackpad comes first.
+    public static func open(preferExternal: Bool = false) -> TrackpadActuator? {
         guard let symbols = Symbols.shared, let list = symbols.deviceList()?.takeRetainedValue() else { return nil }
         var candidates: [(id: UInt64, builtIn: Bool)] = []
         for index in 0..<CFArrayGetCount(list) {
@@ -24,7 +25,8 @@ public final class TrackpadActuator: HapticOutput, @unchecked Sendable {
             var id: UInt64 = 0
             if symbols.deviceID(device, &id) == 0 { candidates.append((id, symbols.isBuiltIn(device))) }
         }
-        for candidate in candidates.sorted(by: { $0.builtIn && !$1.builtIn }) {
+        let first = !preferExternal
+        for candidate in candidates.sorted(by: { $0.builtIn == first && $1.builtIn != first }) {
             guard let actuator = symbols.makeActuator(candidate.id)?.takeRetainedValue(),
                   symbols.openActuator(actuator) == 0 else { continue }
             return TrackpadActuator(symbols: symbols, actuator: actuator, devices: list)
