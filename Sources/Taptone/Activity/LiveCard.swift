@@ -92,6 +92,7 @@ struct LiveCard: View {
         case .off: return "Press play to listen"
         case .starting: return "Connecting to \(output)"
         case .listening(true): return activity.usesMotor ? "Following the bass on \(output)" : "One tap per kick on \(output)"
+        case .listening(false) where activity.hearsOnlySilence: return "If audio is playing, allow system audio access"
         case .listening(false): return "Play something on \(output)"
         case .preview: return "Generated kicks, nothing sent to the trackpad"
         case .failed(_, let needsAccess): return needsAccess ? "Allow system audio access to start" : "Press play to try again"

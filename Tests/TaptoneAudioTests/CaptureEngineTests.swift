@@ -60,7 +60,7 @@ import Testing
             if case .signal(_, .some) = event { newBeat.signal() }
             switch event {
             case .failed, .interrupted: actions.withLock { $0.append("new session failed") }
-            case .signal: break
+            case .signal, .onlySilence: break
             }
         }
         oldRoute.withLock { $0 }?()
@@ -199,6 +199,8 @@ import Testing
             case .failed(let message, _):
                 reports.withLock { $0.append("failed: " + message) }
                 ended.signal()
+            case .onlySilence:
+                break
             }
         }
         // Well past both limits.
@@ -215,6 +217,35 @@ import Testing
         case (true, true): #expect(observed.last?.hasPrefix("interrupted: The audio stream stopped.") == true)
         case (true, false): #expect(observed.last?.hasPrefix("failed: Taptone can’t hear system audio.") == true)
         }
+    }
+
+    /// macOS may send zeros instead of nothing when it withholds system audio; a stream of exact
+    /// zeros gets a hint, and real sound never does.
+    @Test(arguments: [false, true])
+    func onlyZerosGetASilenceHint(sendsSound: Bool) {
+        let feeder = DispatchQueue(label: "feeder")
+        let timer = OSAllocatedUnfairLock<DispatchSourceTimer?>(initialState: nil)
+        let engine = CaptureEngine(timeouts: .init(firstBufferNs: 30_000_000)) {
+            try TestTap(start: { mailbox in
+                let source = DispatchSource.makeTimerSource(queue: feeder)
+                source.schedule(deadline: .now(), repeating: .milliseconds(5))
+                source.setEventHandler { writeSilence(to: mailbox, value: sendsSound ? 0.01 : 0) }
+                source.resume()
+                timer.withLock { $0 = source }
+            }, stop: {
+                timer.withLock { $0?.cancel() }
+                return []
+            })
+        }
+        let hinted = DispatchSemaphore(value: 0)
+        engine.start(id: UUID(), source: .system, sensitivity: .normal) { event in
+            if case .onlySilence(true) = event { hinted.signal() }
+        }
+        let gotHint = hinted.wait(timeout: .now() + .milliseconds(400)) == .success
+        let stopped = DispatchSemaphore(value: 0)
+        engine.shutdown { _ in stopped.signal() }
+        #expect(stopped.wait(timeout: .now() + .seconds(1)) == .success)
+        #expect(gotHint == !sendsSound)
     }
 
     @Test func ownedPCMRemainsReadableAfterStopAndQueuedPacketsAreDiscarded() {
@@ -301,8 +332,8 @@ import Testing
     }
 }
 
-private func writeSilence(to mailbox: TapMailbox, at hostTimeNs: UInt64 = CaptureEngine.now()) {
-    var samples = [Float](repeating: 0, count: 512)
+private func writeSilence(to mailbox: TapMailbox, at hostTimeNs: UInt64 = CaptureEngine.now(), value: Float = 0) {
+    var samples = [Float](repeating: value, count: 512)
     samples.withUnsafeMutableBytes { samples in
         var buffer = AudioBufferList(mNumberBuffers: 1, mBuffers: AudioBuffer(
             mNumberChannels: 1, mDataByteSize: UInt32(samples.count), mData: samples.baseAddress

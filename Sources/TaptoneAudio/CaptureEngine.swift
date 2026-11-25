@@ -33,6 +33,10 @@ public final class CaptureEngine: @unchecked Sendable {
         case interrupted(String)
         /// `needsAccess`: allowing system audio recording would likely fix it.
         case failed(String, needsAccess: Bool)
+        /// Audio has arrived for a while, but every sample was exactly zero, as when macOS withholds
+        /// system audio. Also true of an app that keeps its output open while paused, so it's a hint, not
+        /// a failure; false once real sound arrives.
+        case onlySilence(Bool)
     }
 
     public typealias Report = @Sendable (Event) -> Void
@@ -169,6 +173,7 @@ public final class CaptureEngine: @unchecked Sendable {
                 log.info("First PCM buffer arrived \(startupMs, format: .fixed(precision: 1), privacy: .public) ms after tap startup")
             }
             let receiving = session.lastBufferAt.map { now - $0 < timeouts.receivingNs } ?? false
+            if receiving { session.noteSilence(now: now, after: timeouts.firstBufferNs) }
             if receiving != session.pacedFast {
                 session.pacedFast = receiving
                 session.timer?.schedule(deadline: .now(), repeating: receiving ? Self.fastPace : Self.restingPace,
@@ -241,6 +246,10 @@ private final class Session {
     let report: CaptureEngine.Report
     private let consumePCM: CaptureEngine.ConsumePCM?
     private var missingPCM = false
+    private var firstBufferAt: UInt64?
+    /// Any sample that wasn't exactly zero, this session.
+    private var heardSound = false
+    private var reportedSilence = false
     var sensitivity: BeatDetector.Sensitivity
     var tap: (any CaptureTap)?
     var demo: DemoBeat?
@@ -298,6 +307,10 @@ private final class Session {
     private func process(_ packet: TTAudioPacket, now: UInt64) -> CapturePCM? {
         guard let stereo = packet.stereo else { return nil }
         lastBufferAt = now
+        if firstBufferAt == nil { firstBufferAt = now }
+        if !heardSound {
+            heardSound = UnsafeBufferPointer(start: stereo, count: 2 * Int(packet.frames)).contains { $0 != 0 }
+        }
         let end = packet.hostTimeNs + UInt64(Double(packet.frames) * nsPerFrame)
         guard end >= now || now - end < PulseTiming.maximumAge else {
             resetDetector()
@@ -339,6 +352,15 @@ private final class Session {
             generatedFrames += 1
             lastBufferAt = now
         }
+    }
+
+    /// Reports a change in whether audio has been nothing but zeros for `limit` since the first buffer.
+    func noteSilence(now: UInt64, after limit: UInt64) {
+        guard let firstBufferAt else { return }
+        let silent = !heardSound && now - firstBufferAt >= limit
+        guard silent != reportedSilence else { return }
+        reportedSilence = silent
+        report(.onlySilence(silent))
     }
 
     private func record(_ reading: BeatDetector.Reading, at time: UInt64) {

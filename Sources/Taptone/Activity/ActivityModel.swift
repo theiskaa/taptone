@@ -47,6 +47,8 @@ final class ActivityModel {
     var kickTest = KickTestState.idle
     /// A newer version on GitHub, once a check finds one.
     var availableUpdate: UpdateChecker.Release?
+    /// Listening, but every sample so far was exactly zero: maybe macOS withholds system audio.
+    var hearsOnlySilence = false
     /// The pause shortcut is on, but another app already owns it.
     var shortcutTaken = false
 
@@ -67,6 +69,7 @@ final class ActivityModel {
         case .off: "Not listening"
         case .starting: "Starting…"
         case .listening(true): usesMotor ? "Listening" : "Listening, taps only"
+        case .listening(false) where hearsOnlySilence: "Hearing only silence"
         case .listening(false): "Waiting for audio"
         case .preview: "Demo"
         case .failed(_, true): "Can’t hear system audio"
@@ -92,7 +95,11 @@ final class ActivityModel {
     }
 
     var needsAudioAccess: Bool {
-        if case .failed(_, true) = phase { true } else { false }
+        switch phase {
+        case .failed(_, true): true
+        case .listening(false): hearsOnlySilence
+        default: false
+        }
     }
 
     /// 0...1 for drawing without the motor: each kick swells and fades.

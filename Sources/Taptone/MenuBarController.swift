@@ -251,6 +251,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
         liveTimer = nil
         lastAudible = nil
         activity.update(live: nil)
+        activity.hearsOnlySilence = false
         activity.phase = .off
         if updateMenu { render() }
     }
@@ -262,6 +263,9 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
             fail(message, needsAccess: needsAccess)
         case .interrupted(let reason):
             reconnect(reason)
+        case .onlySilence(let silent):
+            activity.hearsOnlySilence = silent
+            render()
         case .signal(let level, let beat):
             let now = CaptureEngine.now()
             let fresh = beat.flatMap { PulseTiming.isFresh($0, at: now) ? $0 : nil }
