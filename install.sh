@@ -20,6 +20,8 @@
 #   TAPTONE_NO_OPEN=1            don't open Taptone afterwards
 set -eu
 
+# Everything runs from main, called on the last line, so a download cut short runs nothing.
+
 IDENTIFIER="com.theiskaa.taptone"
 TEAM="A474HM679A"
 REQUIREMENT="anchor apple generic and identifier \"$IDENTIFIER\" and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = \"$TEAM\""
@@ -31,6 +33,7 @@ fail() {
 	exit 1
 }
 
+main() {
 [ "$(uname -s)" = Darwin ] || fail "Taptone runs on macOS only."
 [ "$(id -u)" -ne 0 ] || fail "run this as yourself, not with sudo"
 os=$(sw_vers -productVersion)
@@ -42,7 +45,9 @@ minor=$(printf '%s\n' "$os" | cut -d. -f2)
 # Where it goes: wherever Taptone already is, else /Applications when that's writable, else ~/Applications.
 if [ -n "${TAPTONE_INSTALL_DIR:-}" ]; then
 	target=$TAPTONE_INSTALL_DIR
-elif [ -d "$HOME/Applications/Taptone.app" ] && [ ! -d /Applications/Taptone.app ]; then
+elif [ -d /Applications/Taptone.app ]; then
+	target=/Applications
+elif [ -d "$HOME/Applications/Taptone.app" ]; then
 	target="$HOME/Applications"
 elif [ -w /Applications ]; then
 	target=/Applications
@@ -50,6 +55,10 @@ else
 	target="$HOME/Applications"
 fi
 dest="$target/Taptone.app"
+# A second copy elsewhere would leave two Taptones running, so update the existing one or stop.
+if [ -d "$dest" ] && [ ! -w "$target" ]; then
+	fail "Taptone is in $target, which this account can't change. Ask an administrator to run this, or move $dest to the Trash and run this again."
+fi
 
 # Only Taptone itself may be replaced; another app named Taptone is left alone.
 if [ -e "$dest" ] || [ -L "$dest" ]; then
@@ -58,9 +67,11 @@ if [ -e "$dest" ] || [ -L "$dest" ]; then
 fi
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/taptone-install.XXXXXX")
+incoming=""
 previous=""
-# On any exit, a swap stopped half way puts the previous app back.
+# On any exit, a copy stopped half way is removed and a swap stopped half way puts the previous app back.
 cleanup() {
+	[ -z "$incoming" ] || rm -rf "$incoming"
 	if [ -n "$previous" ] && [ -d "$previous" ]; then
 		if [ ! -e "$dest" ]; then
 			mv "$previous" "$dest" || say "Your previous Taptone.app is at $previous"
@@ -116,20 +127,17 @@ if [ "${TAPTONE_ALLOW_UNNOTARIZED:-}" != 1 ]; then
 		fail "macOS doesn't accept this build (it isn't notarized), so it wasn't installed"
 fi
 
-# Quit the copy being replaced, if it's running, so its audio session ends cleanly first.
-running=""
-for pid in $(pgrep -x Taptone 2>/dev/null); do
-	case $(ps -o comm= -p "$pid" 2>/dev/null) in "$dest"/*) running=$pid ;; esac
-done
+# Quit a running Taptone, wherever it runs from, so its audio session ends cleanly and only one is left.
+running=$(pgrep -x Taptone 2>/dev/null || true)
 if [ -n "$running" ]; then
 	say "Quitting Taptone"
 	osascript -e "tell application id \"$IDENTIFIER\" to quit" >/dev/null 2>&1 || true
 	tries=0
-	while kill -0 "$running" 2>/dev/null && [ "$tries" -lt 50 ]; do
+	while pgrep -qx Taptone && [ "$tries" -lt 50 ]; do
 		sleep 0.1
 		tries=$((tries + 1))
 	done
-	kill "$running" 2>/dev/null || true
+	pkill -x Taptone 2>/dev/null || true
 fi
 
 mkdir -p "$target"
@@ -141,12 +149,13 @@ if [ -e "$dest" ]; then
 	previous="$target/.Taptone.app.previous.$$"
 	mv "$dest" "$previous"
 fi
-mv "$incoming" "$dest" || {
-	rm -rf "$incoming"
-	fail "couldn't put Taptone.app in $target"
-}
+mv "$incoming" "$dest" || fail "couldn't put Taptone.app in $target"
+incoming=""
 say "Installed Taptone $version in $target"
 
 if [ "${TAPTONE_NO_OPEN:-}" != 1 ]; then
 	open "$dest" || say "Open Taptone from $target to start it."
 fi
+}
+
+main "$@"
