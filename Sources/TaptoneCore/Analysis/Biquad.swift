@@ -20,6 +20,10 @@ struct Biquad: Sendable {
         let result = b0 * sample + z1
         z1 = b1 * sample - a1 * result + z2
         z2 = b2 * sample - a2 * result
+        // After a signal fades to digital silence the state decays into subnormal numbers, which are
+        // very slow on Intel. Nothing that small is audible.
+        if abs(z1) < 1e-20 { z1 = 0 }
+        if abs(z2) < 1e-20 { z2 = 0 }
         return result
     }
 }
