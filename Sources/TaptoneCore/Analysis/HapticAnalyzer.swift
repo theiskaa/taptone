@@ -57,8 +57,9 @@ public struct HapticAnalyzer: Sendable {
     private var pending: PendingOnset?
     /// An attack that has been decided, waiting for the next cue: its bass weight then and its scale.
     private var decided: (weight: Double, scale: Double)?
-    /// Hops to ignore beats for after a reset: a fresh detector reads any bass already playing as a hit.
-    private var warmupHops = 0
+    /// Hops to ignore beats for at the start and after a reset: a fresh detector reads any bass
+    /// already playing as a hit.
+    private var warmupHops = HapticAnalyzer.warmupHops
 
     public init?(sampleRate: Double, sensitivity: BeatDetector.Sensitivity = .normal) {
         guard let envelope = BassEnvelope(sampleRate: sampleRate) else { return nil }

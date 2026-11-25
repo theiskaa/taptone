@@ -256,6 +256,8 @@ private final class Session {
     private var nsPerFrame = 0.0
     private var level: Float = -90
     private var beat: UInt64?
+    /// Frames to ignore beats for after a reset: a fresh detector reads bass already playing as a hit.
+    private var warmupFrames = 0
     private var lastUpdate: UInt64?
     private var generatedFrames = 0
 
@@ -278,6 +280,7 @@ private final class Session {
         detector?.sensitivity = sensitivity
         beat = nil
         level = -90
+        warmupFrames = Int(0.030 * sampleRate)
     }
 
     func drain(_ mailbox: TapMailbox, now: UInt64, isCurrent: () -> Bool) {
@@ -302,7 +305,12 @@ private final class Session {
         }
         if packet.discontinuity { resetDetector() }
         for frame in 0..<Int(packet.frames) {
-            if let reading = detector?.push(left: stereo[2 * frame], right: stereo[2 * frame + 1]) {
+            let warming = warmupFrames > 0
+            if warming { warmupFrames -= 1 }
+            guard let reading = detector?.push(left: stereo[2 * frame], right: stereo[2 * frame + 1]) else { continue }
+            if warming {
+                level = max(level, reading.levelDBFS)
+            } else {
                 record(reading, at: packet.hostTimeNs + UInt64(Double(frame) * nsPerFrame))
             }
         }

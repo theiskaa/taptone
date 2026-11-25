@@ -6,6 +6,7 @@ import Testing
     @Test(arguments: [44_100.0, 48_000.0, 96_000.0])
     func emitsACueEveryFiveMillisecondsOnTheCaptureClock(rate: Double) throws {
         var analyzer = try #require(HapticAnalyzer(sampleRate: rate))
+        analyzer.settle()
         var cues: [HapticCue] = []
         let start: UInt64 = 5_000_000_000
         analyzer.analyze([Float](repeating: 0, count: Int(rate) * 2), hostTimeNs: start) { cues.append($0) }
@@ -42,6 +43,7 @@ import Testing
         func kicks(gain: Float) throws -> [HapticCue] {
             var demo = DemoBeat(bpm: 120)
             var analyzer = try #require(HapticAnalyzer(sampleRate: DemoBeat.sampleRate))
+            analyzer.settle()
             var cues: [HapticCue] = []
             let samples = (0..<Int(DemoBeat.sampleRate * 3)).flatMap { _ -> [Float] in
                 let sample = demo.nextSample() * gain
@@ -52,13 +54,18 @@ import Testing
         }
         let loud = try kicks(gain: 1)
         // Normalized: a quiet copy plays the same kicks at the same strength, the first one out of silence
-        // included, because the gain never lifts a sample past full scale while it settles.
+        // included (within one 5 ms hop, while the gain settles), because the gain never lifts a sample past
+        // full scale.
         let quiet = try kicks(gain: 0.1)
         #expect(loud.count == 6)
         for (index, cue) in loud.enumerated() {
             #expect((0...40_000_000).contains(Int(cue.timeNs) - index * 500_000_000))
         }
-        #expect(quiet.map(\.timeNs) == loud.map(\.timeNs))
+        #expect(quiet.count == loud.count)
+        if let first = loud.first, let quietFirst = quiet.first {
+            #expect(abs(Int(first.timeNs) - Int(quietFirst.timeNs)) <= 10_000_000)
+        }
+        #expect(quiet.dropFirst().map(\.timeNs) == loud.dropFirst().map(\.timeNs))
         #expect(zip(loud, quiet).allSatisfy { abs(($0.onset ?? 0) - ($1.onset ?? 0)) < 0.1 })
     }
 
@@ -151,6 +158,22 @@ import Testing
     }
 
     /// A held note doesn't turn into a kick when the analyzer resets after a glitch.
+    /// A session that starts mid-song (after headphones connect, a call ends, or the Mac wakes) picks up
+    /// bass that's already playing; that's not a kick.
+    @Test(arguments: [44_100.0, 48_000, 96_000, 192_000])
+    func startingMidNoteDoesNotInventAKick(rate: Double) throws {
+        for hertz in [45.0, 55, 80] {
+            var analyzer = try #require(HapticAnalyzer(sampleRate: rate))
+            let stereo = (0..<Int(rate / 2)).flatMap { index -> [Float] in
+                let sample = Float(0.4 * sin(2 * .pi * hertz * (Double(index) / rate + 0.25)))
+                return [sample, sample]
+            }
+            var onsets = 0
+            analyzer.analyze(stereo, hostTimeNs: 0) { if $0.onset != nil { onsets += 1 } }
+            #expect(onsets == 0, "\(hertz) Hz at \(rate) Hz")
+        }
+    }
+
     @Test func resetDoesNotInventAKick() throws {
         var analyzer = try #require(HapticAnalyzer(sampleRate: 48_000))
         func note(from start: Int) -> [Float] {
@@ -200,6 +223,7 @@ import Testing
     private func analyze(seconds: Double, rate: Double = 48_000, followsVolume: Bool = false,
                          sample: (Double) -> (Double, Double)) throws -> [HapticCue] {
         var analyzer = try #require(HapticAnalyzer(sampleRate: rate))
+        analyzer.settle()
         analyzer.followsVolume = followsVolume
         var stereo: [Float] = []
         for index in 0..<Int(rate * seconds) {
@@ -209,5 +233,12 @@ import Testing
         var cues: [HapticCue] = []
         analyzer.analyze(stereo, hostTimeNs: 0) { cues.append($0) }
         return cues
+    }
+}
+
+extension HapticAnalyzer {
+    /// A fresh analyzer ignores its first 30 ms, so a test signal that starts on a kick gets a short silent lead-in.
+    mutating func settle() {
+        analyze([Float](repeating: 0, count: Int(sampleRate * 0.05) * 2), hostTimeNs: 0) { _ in }
     }
 }

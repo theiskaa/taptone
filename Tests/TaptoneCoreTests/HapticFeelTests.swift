@@ -115,6 +115,7 @@ import Testing
 
     private func analyze(seconds: Double, sample: (Double) -> Double) throws -> [HapticCue] {
         var analyzer = try #require(HapticAnalyzer(sampleRate: Self.rate))
+        analyzer.settle()
         var cues: [HapticCue] = []
         let frames = Int(Self.rate * seconds)
         var stereo: [Float] = []
