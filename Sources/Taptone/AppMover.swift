@@ -65,7 +65,13 @@ enum AppMover {
         // The copy came from a download; without this, macOS would translocate it again.
         removeQuarantine(staging)
         do {
-            if manager.fileExists(atPath: destination.path) { try manager.trashItem(at: destination, resultingItemURL: nil) }
+            if manager.fileExists(atPath: destination.path) {
+                // Replace only an older Taptone, never another app that happens to share the name.
+                guard Bundle(url: destination)?.bundleIdentifier == Bundle.main.bundleIdentifier else {
+                    throw CocoaError(.fileWriteFileExists)
+                }
+                try manager.trashItem(at: destination, resultingItemURL: nil)
+            }
             try manager.moveItem(at: staging, to: destination)
         } catch {
             try? manager.removeItem(at: staging)
