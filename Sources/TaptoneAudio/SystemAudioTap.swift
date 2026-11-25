@@ -123,7 +123,6 @@ final class SystemAudioTap: @unchecked Sendable {
     private func applyIgnored() {
         let processes = processesToIgnore()
         guard processes != ignoredProcesses, let tap else { return }
-        ignoredProcesses = processes
         tap.description.processes = processes
         // The property holds a reference to the description object.
         var description = Unmanaged.passUnretained(tap.description).toOpaque()
@@ -131,7 +130,8 @@ final class SystemAudioTap: @unchecked Sendable {
         let status = withExtendedLifetime(tap.description) {
             hal.writeProperty(tap.id, &address, 0, nil, UInt32(MemoryLayout.size(ofValue: description)), &description)
         }
-        if status != noErr { Self.logger.error("Couldn’t update the ignored apps: \(status)") }
+        // Remember only what took, so the next change tries again.
+        if status == noErr { ignoredProcesses = processes } else { Self.logger.error("Couldn’t update the ignored apps: \(status)") }
     }
 
     /// Taptone itself, alert sounds, and the ignored apps' audio processes.
