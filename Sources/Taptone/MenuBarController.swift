@@ -480,12 +480,14 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
     // MARK: Updates
 
     /// Once a day, counted from the last check, so relaunching doesn't check again.
-    private func scheduleUpdateCheck() {
+    /// After a failed check (offline, rate limited), tries again in an hour instead.
+    private func scheduleUpdateCheck(retrying: Bool = false) {
         updateTimer?.invalidate()
         updateTimer = nil
         guard settings.checksForUpdates else { return }
         let due = (settings.lastUpdateCheck ?? .distantPast).addingTimeInterval(UpdateChecker.interval)
-        let timer = Timer(timeInterval: max(15, due.timeIntervalSinceNow), repeats: false) { [weak self] _ in
+        let wait = retrying ? 60 * 60 : max(15, due.timeIntervalSinceNow)
+        let timer = Timer(timeInterval: wait, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkQuietly() }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -494,10 +496,12 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
 
     private func checkQuietly() {
         Task {
-            if case .available(let release) = await UpdateChecker.check() {
+            let outcome = await UpdateChecker.check()
+            if case .available(let release) = outcome {
                 activity.availableUpdate = release
                 render()
             }
+            if case .failed = outcome { return scheduleUpdateCheck(retrying: true) }
             settings.lastUpdateCheck = .now
             scheduleUpdateCheck()
         }
@@ -507,7 +511,10 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
         if let release = activity.availableUpdate { return UpdateChecker.present(release) }
         Task {
             let outcome = await UpdateChecker.check()
-            settings.lastUpdateCheck = .now
+            if case .failed = outcome {} else {
+                settings.lastUpdateCheck = .now
+                scheduleUpdateCheck()
+            }
             switch outcome {
             case .available(let release):
                 activity.availableUpdate = release
