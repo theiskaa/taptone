@@ -678,11 +678,22 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
         app.addItem(.separator())
         app.addItem(NSMenuItem(title: "Hide Taptone", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h"))
         app.addItem(item("Quit Taptone", #selector(quit), key: "q"))
+        // Cut, copy and paste in text fields, such as the Add App… panel's search.
+        let edit = NSMenu(title: "Edit")
+        edit.addItem(NSMenuItem(title: "Undo", action: Selector(("undo:")), keyEquivalent: "z"))
+        let redo = NSMenuItem(title: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        edit.addItem(redo)
+        edit.addItem(.separator())
+        edit.addItem(NSMenuItem(title: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x"))
+        edit.addItem(NSMenuItem(title: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c"))
+        edit.addItem(NSMenuItem(title: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v"))
+        edit.addItem(NSMenuItem(title: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a"))
         let window = NSMenu(title: "Window")
         window.addItem(NSMenuItem(title: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
         window.addItem(NSMenuItem(title: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m"))
         let main = NSMenu()
-        for (title, submenu) in [("Taptone", app), ("Window", window)] {
+        for (title, submenu) in [("Taptone", app), ("Edit", edit), ("Window", window)] {
             let top = NSMenuItem(title: title, action: nil, keyEquivalent: "")
             top.submenu = submenu
             main.addItem(top)
