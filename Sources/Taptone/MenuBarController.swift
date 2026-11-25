@@ -35,6 +35,9 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
     private var reconnects: [Date] = []
     // Sleep, lock, and wake. A resume waits a second, so it checks nothing has suspended since.
     private var screenLocked = false
+    /// Asleep, the display off, or another user's session in front: nothing starts listening by itself.
+    private var suspended = false
+    private var sessionActive = true
     private var suspensions = 0
     /// Calls pause listening only as they start, so pressing play during one still works.
     private var microphoneWasInUse = false
@@ -101,14 +104,16 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
         render()
 
         let workspace = NSWorkspace.shared.notificationCenter
-        for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification,
-                     NSWorkspace.sessionDidResignActiveNotification] {
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification] {
             workspace.addObserver(self, selector: #selector(suspend), name: name, object: nil)
         }
-        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification,
-                     NSWorkspace.sessionDidBecomeActiveNotification] {
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
             workspace.addObserver(self, selector: #selector(resume), name: name, object: nil)
         }
+        workspace.addObserver(self, selector: #selector(sessionDidResignActive),
+                              name: NSWorkspace.sessionDidResignActiveNotification, object: nil)
+        workspace.addObserver(self, selector: #selector(sessionDidBecomeActive),
+                              name: NSWorkspace.sessionDidBecomeActiveNotification, object: nil)
         let screen = DistributedNotificationCenter.default()
         screen.addObserver(self, selector: #selector(screenDidLock), name: .init("com.apple.screenIsLocked"), object: nil)
         screen.addObserver(self, selector: #selector(screenDidUnlock), name: .init("com.apple.screenIsUnlocked"), object: nil)
@@ -180,7 +185,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
     private func autoStart() {
         // A timer can fire late, as after sleep; a pause that has run out is over.
         if let until = activity.pausedUntil, until <= .now { endPause() }
-        guard quitTask == nil, settings.didShowWelcome, !activity.isPaused, !screenLocked,
+        guard quitTask == nil, settings.didShowWelcome, !activity.isPaused, !screenLocked, !suspended, sessionActive,
               !activity.phase.isLive, activity.phase != .preview else { return }
         // The kick test has the motor; listening picks up when it ends.
         if kickTest != nil {
@@ -609,6 +614,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
 
     @objc private func suspend() {
         suspensions += 1
+        suspended = true
         stop()
     }
 
@@ -617,8 +623,14 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
     @objc private func resume() {
         let suspensionsAtWake = suspensions
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
-            guard let self, suspensionsAtWake == self.suspensions, !self.welcomeStartsListening else { return }
+            guard let self, suspensionsAtWake == self.suspensions else { return }
+            self.suspended = false
+            // Timers count only time awake, so one set before sleep would fire late: set them again.
+            self.schedulePauseEnd()
+            self.scheduleUpdateCheck()
+            guard !self.welcomeStartsListening else { return }
             self.autoStart()
+            self.render()
         }
     }
 
@@ -629,6 +641,17 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
 
     @objc private func screenDidUnlock() {
         screenLocked = false
+        resume()
+    }
+
+    /// Another user's session came to the front: their trackpad isn't Taptone's to drive.
+    @objc private func sessionDidResignActive() {
+        sessionActive = false
+        suspend()
+    }
+
+    @objc private func sessionDidBecomeActive() {
+        sessionActive = true
         resume()
     }
 
