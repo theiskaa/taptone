@@ -38,7 +38,7 @@ release: ## Release VERSION=X.Y.Z: notarize, tag, push, publish, update the cask
 release-dry-run: ## Build, sign and check a release locally, publishing nothing (VERSION=X.Y.Z optional)
 	scripts/release.sh --dry-run $(VERSION)
 
-brand: ## Redraw the app icon, logo, and README banners
+brand: ## Redraw the app icon and logo
 	swift scripts/make-brand.swift
 
 clean: ## Remove build products

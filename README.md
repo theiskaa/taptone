@@ -1,14 +1,15 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/banner-dark.svg">
-  <img alt="Taptone: feel the bass through your trackpad" width="460" src="assets/banner-light.svg">
-</picture>
+<p align="center">
+  <img alt="Taptone app icon" width="128" src="assets/icon.png">
+</p>
 
-<br/>
+<h1 align="center">Taptone</h1>
 
-<p>
+<p align="center">Feel the bass through your trackpad.</p>
+
+<p align="center">
   <img alt="macOS 14.2+" src="https://img.shields.io/badge/macOS-14.2%2B-39624D">
   <img alt="Swift 6" src="https://img.shields.io/badge/Swift-6-F05138">
-  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-blue"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a>
 </p>
 
 Taptone is a menu bar app that plays the bass of whatever’s on your Mac through the Force Touch trackpad. Rest a fingertip on the trackpad and you feel the low end of a song, a film, or a game, in time with what you hear. Your speakers or headphones keep playing as usual.
@@ -18,8 +19,8 @@ Taptone is a menu bar app that plays the bass of whatever’s on your Mac throug
 - **Bass notes** become a continuous hum that follows how loud the bass is and vibrates in tune with the note.
 - **Kicks** land as a short, harder thump on top.
 - **Timing** follows your output’s reported latency, Bluetooth included, so the trackpad lines up with your ears.
-- **Volume** doesn’t matter: a quiet app, or the volume turned way down, feels as strong as full volume. Turn on **Follow volume** if you’d rather it got weaker with the sound.
-- **Silence** sends nothing to the motor.
+- **Volume** doesn’t matter: a quiet app, or the volume turned way down, feels as strong as full volume. Turn on **Follow volume** if you’d rather it got weaker with the sound. Muting always stops it.
+- **Silence** sends nothing to the motor, and neither do macOS alert sounds.
 
 ## Install
 
@@ -48,25 +49,28 @@ This builds Taptone in release, puts it in `/Applications` (or `~/Applications` 
 
 ## Use
 
-<img alt="Taptone app icon" width="72" align="right" src="assets/logo.svg">
-
 1. The first launch opens a welcome window. **Try the motor** plays four kicks, so you know what to feel for. Then click **Continue**.
 2. Allow system audio access when macOS asks. This is needed once.
 3. Play something and rest a fingertip on the trackpad.
 
-Taptone listens whenever it’s open. The switch at the top of its menu pauses it, and quitting stops it. The menu also sets **Intensity** (how hard the trackpad plays) and **Kicks** (how readily drum hits are picked up).
+Taptone lives in the menu bar and listens whenever it’s open. The switch at the top of its menu pauses it until you resume, **Pause for 1 Hour** pauses it for a while, and quitting stops it. The menu also sets **Intensity** (how hard the trackpad plays) and **Kicks** (how many drum hits come through).
 
-**Open Taptone** shows the main window: the bass note being played and the last 12 seconds, with all the settings below.
+**Open Taptone** shows the main window, as does opening Taptone again from Finder or Spotlight: the bass note being played and the last 12 seconds, with all the settings below.
 
 | Setting | What it does |
 | --- | --- |
 | **Intensity** | Light, medium, or strong. |
-| **Kick sensitivity** | Low, normal, or high. |
+| **Kicks** | Fewer, normal, or more. |
 | **Follow volume** | Off: the same strength at any volume. On: haptics get weaker as you turn the sound down. |
+| **Try the motor** | Four test kicks, with no audio. |
+| **Pause during calls** | On by default. Haptics pause while an app uses the microphone, and pick up again when the call ends. |
+| **Ignored apps** | Apps whose sound never reaches the trackpad. Safari and other WebKit browsers can’t be ignored. |
 | **Haptic delay** | Starts at the output’s reported latency. If haptics feel early or late, adjust it 10 ms at a time. |
 | **Open at login** | Opens Taptone, listening, when you log in. |
+| **Pause shortcut** | ⌃⌥⌘P pauses or resumes from any app. |
+| **Check for updates** | Once a day, asks GitHub for the latest version. |
 
-With nothing playing, Taptone waits quietly and picks up again when audio starts. When the audio output changes, for example when headphones connect, it reconnects to the new output on its own. It pauses during sleep and screen lock, and picks up again when you’re back. It doesn’t use the microphone, and audio is never saved or uploaded.
+With nothing playing, Taptone waits quietly and picks up again when audio starts. When the audio output changes, for example when headphones connect, it reconnects to the new output on its own. It pauses during sleep and screen lock, and picks up again when you’re back. It never records the microphone, only notices whether one is in use, and audio is never saved or uploaded.
 
 ## Troubleshooting
 
@@ -76,19 +80,30 @@ With nothing playing, Taptone waits quietly and picks up again when audio starts
 tccutil reset All com.theiskaa.taptone
 ```
 
-**Nothing happens on the trackpad.** Check that *Force Click and haptic feedback* is on in Trackpad settings, then use **Diagnostics → Welcome…** to play the four test kicks. If the motor can’t be opened, Taptone falls back to standard taps on each kick, and the menu says “Standard taps”.
+**Nothing happens on the trackpad.** Check that *Force Click and haptic feedback* is on in Trackpad settings, then play the four test kicks with **Try the motor** in the main window. Taptone needs a Force Touch trackpad: the one built into a MacBook, or a Magic Trackpad 2 or later. With the lid closed, it plays on a connected Magic Trackpad.
+
+**Haptics stopped during a call, or when nothing’s playing.** **Pause during calls** holds haptics while any app uses the microphone, including dictation apps. Turn it off in the main window if that’s not what you want.
 
 **Haptics feel early or late.** Choose **Open Taptone** in the menu and adjust **Haptic delay**, 10 ms at a time.
 
-**Logs.** `make run` builds a debug app with diagnostics on. Watch it with:
+**Logs.** Quit Taptone, open it again with diagnostics on, then watch what it does:
 
 ```sh
+open -a Taptone --args --diagnostics
 /usr/bin/log stream --level info --predicate 'subsystem == "com.theiskaa.taptone"'
 ```
 
 ## Uninstall
 
+With Homebrew, `--zap` also removes Taptone’s settings:
+
 ```sh
-make uninstall              # quit and remove the app
-scripts/uninstall.sh --purge  # also forget its settings and audio permission
+brew uninstall --zap --cask taptone
+```
+
+Otherwise, quit Taptone and move it to the Trash. To also forget its settings and audio permission:
+
+```sh
+defaults delete com.theiskaa.taptone
+tccutil reset All com.theiskaa.taptone
 ```
