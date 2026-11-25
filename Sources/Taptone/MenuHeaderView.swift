@@ -44,7 +44,6 @@ final class MenuHeaderView: NSView {
         liveRow.setAccessibilityRole(.staticText)
         liveRow.wantsLayer = true
         liveRow.layer?.cornerRadius = 7
-        liveRow.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.05).cgColor
         for view in [wave, note] {
             view.translatesAutoresizingMaskIntoConstraints = false
             liveRow.addSubview(view)
@@ -81,6 +80,19 @@ final class MenuHeaderView: NSView {
             stack.widthAnchor.constraint(equalToConstant: Self.width),
         ])
         fitHeight()
+        tintLiveRow()
+    }
+
+    /// A layer's CGColor doesn't follow the appearance by itself, so resolve it again when light or dark changes.
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        tintLiveRow()
+    }
+
+    private func tintLiveRow() {
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            liveRow.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.05).cgColor
+        }
     }
 
     @available(*, unavailable)
