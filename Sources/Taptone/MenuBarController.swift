@@ -455,6 +455,8 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
             guard !Task.isCancelled, let self else { return }
             self.stop()
             self.activity.kickTest = .finished
+            // The motor just worked, so an earlier "no trackpad" or motor failure no longer holds.
+            self.failureBeforeKickTest = nil
             self.resumeAfterKickTest()
         }
     }
