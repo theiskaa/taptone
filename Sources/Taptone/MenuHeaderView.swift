@@ -92,7 +92,7 @@ final class MenuHeaderView: NSView {
         case .failed, .noTrackpad: .systemOrange
         default: .secondaryLabelColor
         }
-        onOff.isOn = activity.phase.isLive
+        onOff.isOn = activity.phase.isLive || activity.phase == .preview // The demo plays, so it shows as on.
         intensity.selected = HapticIntensity.allCases.firstIndex(of: settings.intensity) ?? 1
         intensity.isEnabled = activity.usesMotor // Standard taps have one fixed strength.
         sensitivity.selected = BeatDetector.Sensitivity.allCases.firstIndex(of: settings.sensitivity) ?? 1
