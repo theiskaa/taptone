@@ -28,7 +28,7 @@ import Testing
         #expect(tap.sampleRate == 48_000)
         try tap.start()
         #expect(tap.stop().isEmpty)
-        #expect(fake.releases == [.io, .processListener, .formatListener, .outputListener, .callback, .aggregate, .tap])
+        #expect(fake.releases == [.io, .processListener, .formatListener, .restartListener, .outputListener, .callback, .aggregate, .tap])
         #expect(fake.activeListeners == 0)
     }
 
@@ -61,17 +61,17 @@ import Testing
         try tap.prepare(queue: fake.queue, ignoring: [], onRouteChange: {})
         try tap.start()
         #expect(tap.stop() == [CaptureCleanupIssue(operation: "remove route listener", status: kAudioHardwareIllegalOperationError)])
-        #expect(fake.releases == [.io, .processListener, .formatListener, .outputListener, .callback, .aggregate, .tap])
+        #expect(fake.releases == [.io, .processListener, .formatListener, .restartListener, .outputListener, .callback, .aggregate, .tap])
     }
 }
 
 private enum Released: Equatable, Sendable {
-    case tap, aggregate, callback, outputListener, formatListener, processListener, io
+    case tap, aggregate, callback, outputListener, restartListener, formatListener, processListener, io
 }
 
 private enum SetupFault: CaseIterable, Sendable {
-    case tap, format, unsupportedFormat, uid, aggregate, callback, missingCallback, outputListener, formatListener,
-         processListener, startIO
+    case tap, format, unsupportedFormat, uid, aggregate, callback, missingCallback, outputListener, restartListener,
+         formatListener, processListener, startIO
 
     var rollbackOrder: [Released] {
         switch self {
@@ -79,9 +79,10 @@ private enum SetupFault: CaseIterable, Sendable {
         case .format, .unsupportedFormat, .uid, .aggregate: [.tap]
         case .callback, .missingCallback: [.aggregate, .tap]
         case .outputListener: [.callback, .aggregate, .tap]
-        case .formatListener: [.outputListener, .callback, .aggregate, .tap]
-        case .processListener: [.formatListener, .outputListener, .callback, .aggregate, .tap]
-        case .startIO: [.processListener, .formatListener, .outputListener, .callback, .aggregate, .tap]
+        case .restartListener: [.outputListener, .callback, .aggregate, .tap]
+        case .formatListener: [.restartListener, .outputListener, .callback, .aggregate, .tap]
+        case .processListener: [.formatListener, .restartListener, .outputListener, .callback, .aggregate, .tap]
+        case .startIO: [.processListener, .formatListener, .restartListener, .outputListener, .callback, .aggregate, .tap]
         }
     }
 
@@ -91,7 +92,7 @@ private enum SetupFault: CaseIterable, Sendable {
         case .unsupportedFormat: "format Taptone doesn’t support"
         case .missingCallback: "audio callback wasn’t created"
         // Other HAL errors read the same to the user; the log says which call failed.
-        case .format, .uid, .aggregate, .callback, .outputListener, .formatListener, .processListener, .startIO:
+        case .format, .uid, .aggregate, .callback, .outputListener, .restartListener, .formatListener, .processListener, .startIO:
             "Taptone couldn’t start listening"
         }
     }
@@ -216,6 +217,9 @@ private final class FakeHAL: Sendable {
             if selector == kAudioHardwarePropertyDefaultOutputDevice {
                 #expect(object == kAudioObjectSystemObject)
                 if fault == .outputListener { return kAudioHardwareUnspecifiedError }
+            } else if selector == kAudioHardwarePropertyServiceRestarted {
+                #expect(object == kAudioObjectSystemObject)
+                if fault == .restartListener { return kAudioHardwareUnspecifiedError }
             } else if selector == kAudioHardwarePropertyProcessObjectList {
                 #expect(object == kAudioObjectSystemObject)
                 if fault == .processListener { return kAudioHardwareUnspecifiedError }
@@ -249,6 +253,9 @@ private final class FakeHAL: Sendable {
             if selector == kAudioHardwarePropertyDefaultOutputDevice {
                 #expect(object == kAudioObjectSystemObject)
                 released(.outputListener)
+            } else if selector == kAudioHardwarePropertyServiceRestarted {
+                #expect(object == kAudioObjectSystemObject)
+                released(.restartListener)
             } else if selector == kAudioHardwarePropertyProcessObjectList {
                 #expect(object == kAudioObjectSystemObject)
                 released(.processListener)

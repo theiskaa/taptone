@@ -99,6 +99,8 @@ final class SystemAudioTap: @unchecked Sendable {
         teardown.acquired("remove audio callback") { [release = hal.destroyIO] in release(aggregate, io) }
 
         try listen(Self.system, kAudioHardwarePropertyDefaultOutputDevice, queue: queue, callback: onRouteChange)
+        // coreaudiod restarted: the tap and capture device are gone, so start over at once.
+        try listen(Self.system, kAudioHardwarePropertyServiceRestarted, queue: queue, callback: onRouteChange)
         // Changing the ignored apps also notifies the format; only a real change means a new output.
         try listen(tap, kAudioTapPropertyFormat, queue: queue) { [weak self] in
             guard let self, let current = try? self.readFormat(tap),

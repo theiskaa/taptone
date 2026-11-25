@@ -17,8 +17,15 @@ struct CaptureTeardown {
         var issues: [CaptureCleanupIssue] = []
         while let release = releases.popLast() {
             let status = release.perform()
-            if status != noErr { issues.append(CaptureCleanupIssue(operation: release.operation, status: status)) }
+            if status != noErr && !Self.alreadyGone.contains(status) {
+                issues.append(CaptureCleanupIssue(operation: release.operation, status: status))
+            }
         }
         return issues
     }
+
+    /// The object no longer exists, as after coreaudiod restarts: there's nothing left to release.
+    private static let alreadyGone: Set<OSStatus> = [
+        OSStatus(kAudioHardwareBadObjectError), OSStatus(kAudioHardwareBadDeviceError), OSStatus(kAudioHardwareBadStreamError),
+    ]
 }
