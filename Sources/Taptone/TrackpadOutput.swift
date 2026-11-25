@@ -91,49 +91,54 @@ final class TrackpadOutput {
 /// Analysis on the capture worker, playback on the player's thread.
 private final class MotorVoice: Sendable {
     let player: HapticPlayer
-    private struct State {
-        var analyzer: HapticAnalyzer?
+    private struct Settings {
         var sensitivity = BeatDetector.Sensitivity.normal
         var followsVolume = false
         /// What the output volume leaves of the signal; 0 while muted.
         var outputGain: Float = 1
     }
-    private let state = OSAllocatedUnfairLock(initialState: State())
+    /// Set from the main thread, read once per packet; the analysis itself runs outside the lock.
+    private let settings = OSAllocatedUnfairLock(initialState: Settings())
+    /// Only touched from `consume`, which the capture worker calls one packet at a time.
+    private nonisolated(unsafe) var analyzer: HapticAnalyzer?
 
     init?(intensity: HapticIntensity, preferExternal: Bool, onFailure: @escaping @Sendable () -> Void) {
         guard let actuator = TrackpadActuator.open(preferExternal: preferExternal) else { return nil }
         player = HapticPlayer(output: actuator, latencyNs: 0, intensity: intensity, onFailure: onFailure)
     }
 
+    /// A backstop: the player's thread keeps running, with the actuator open, until it's stopped. The
+    /// app always stops it first, which makes this a no-op.
+    deinit { player.stop() }
+
     func consume(_ packet: CapturePCM) {
-        let cues = state.withLock { state -> [HapticCue] in
-            if state.analyzer?.sampleRate != packet.sampleRate {
-                state.analyzer = HapticAnalyzer(sampleRate: packet.sampleRate, sensitivity: state.sensitivity)
-                state.analyzer?.followsVolume = state.followsVolume
-            } else if packet.discontinuity {
-                state.analyzer?.reset()
-            }
-            // The tap hears apps before the output volume applies, so apply it here when following it.
-            let gain = state.followsVolume ? state.outputGain : 1
-            let stereo = gain == 1 ? packet.stereo : packet.stereo.map { $0 * gain }
-            var cues: [HapticCue] = []
-            state.analyzer?.analyze(stereo, hostTimeNs: packet.hostTimeNs) { cues.append($0) }
-            // Muted: keep analyzing, so unmuting picks up mid-song, but play nothing.
-            return state.outputGain > 0 ? cues : []
+        let current = settings.withLock { $0 }
+        if analyzer?.sampleRate != packet.sampleRate {
+            analyzer = HapticAnalyzer(sampleRate: packet.sampleRate, sensitivity: current.sensitivity)
+        } else if packet.discontinuity {
+            analyzer?.reset()
         }
-        cues.forEach(player.append)
+        // Mutated in place: a copy would duplicate the analyzer's buffers on every packet.
+        guard analyzer != nil else { return }
+        if analyzer?.sensitivity != current.sensitivity { analyzer?.sensitivity = current.sensitivity }
+        analyzer?.followsVolume = current.followsVolume
+        // The tap hears apps before the output volume applies, so apply it here when following it.
+        let gain = current.followsVolume ? current.outputGain : 1
+        let stereo = gain == 1 ? packet.stereo : packet.stereo.map { $0 * gain }
+        var cues: [HapticCue] = []
+        analyzer?.analyze(stereo, hostTimeNs: packet.hostTimeNs) { cues.append($0) }
+        // Muted: keep analyzing, so unmuting picks up mid-song, but play nothing.
+        if current.outputGain > 0 { cues.forEach(player.append) }
     }
 
     func configure(sensitivity: BeatDetector.Sensitivity, followsVolume: Bool) {
-        state.withLock { state in
-            state.sensitivity = sensitivity
-            state.followsVolume = followsVolume
-            state.analyzer?.sensitivity = sensitivity
-            state.analyzer?.followsVolume = followsVolume
+        settings.withLock { settings in
+            settings.sensitivity = sensitivity
+            settings.followsVolume = followsVolume
         }
     }
 
     func setOutput(gain: Float) {
-        state.withLock { $0.outputGain = gain }
+        settings.withLock { $0.outputGain = gain }
     }
 }
