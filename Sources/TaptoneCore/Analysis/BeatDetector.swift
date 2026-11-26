@@ -140,16 +140,14 @@ public struct BeatDetector: Sendable {
 /// and most of its pitch dive, with snare shells (190–220 Hz) 13–18 dB down.
 private struct KickBand: Sendable {
     private var high: Biquad
-    private var lowA: Biquad
-    private var lowB: Biquad
+    private var low: ButterworthLowPass
 
     init(rate: Double) {
         high = Biquad(rate: rate, frequency: 45, q: 1 / sqrt(2), highPass: true)
-        lowA = Biquad(rate: rate, frequency: 130, q: 0.5411961)
-        lowB = Biquad(rate: rate, frequency: 130, q: 1.306563)
+        low = ButterworthLowPass(rate: rate, frequency: 130)
     }
 
     mutating func push(_ sample: Float) -> Float {
-        Float(lowB.push(lowA.push(high.push(Double(sample)))))
+        Float(low.push(high.push(Double(sample))))
     }
 }

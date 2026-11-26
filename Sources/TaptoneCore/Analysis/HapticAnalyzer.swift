@@ -30,8 +30,13 @@ public struct HapticAnalyzer: Sendable {
     static let minimumOnset = 0.15
     /// A plucked note plays at this fraction of a kick of the same strength.
     static let pluckScale = 0.4
+    /// Hops to ignore beats for at the start and after a reset (30 ms): a fresh detector reads any bass
+    /// already playing as a hit.
+    private static let warmupHops = 6
 
     public let sampleRate: Double
+    /// Feel the level as heard: turning the volume down makes the haptics weaker too.
+    public var followsVolume = false
     private var envelope: BassEnvelope
     private var detector: BeatDetector
     private var pitch: BassPitchTracker
@@ -48,8 +53,8 @@ public struct HapticAnalyzer: Sendable {
     private var hopBass = 0.0
     private var hopDeep = 0.0
     private var hopFull = 0.0
-    private var deepA: Biquad
-    private var deepB: Biquad
+    /// Power below 65 Hz, where voices don't reach, for the voice gate.
+    private var deep: ButterworthLowPass
     /// The voice gate's latest weight, for attacks decided between hops.
     private var speech = 1.0
     private var inHop = 0
@@ -57,9 +62,7 @@ public struct HapticAnalyzer: Sendable {
     private var pending: PendingOnset?
     /// An attack that has been decided, waiting for the next cue: its bass weight then and its scale.
     private var decided: (weight: Double, scale: Double)?
-    /// Hops to ignore beats for at the start and after a reset: a fresh detector reads any bass
-    /// already playing as a hit.
-    private var warmupHops = HapticAnalyzer.warmupHops
+    private var warmupLeft = HapticAnalyzer.warmupHops
 
     public init?(sampleRate: Double, sensitivity: BeatDetector.Sensitivity = .normal) {
         guard let envelope = BassEnvelope(sampleRate: sampleRate) else { return nil }
@@ -75,39 +78,17 @@ public struct HapticAnalyzer: Sendable {
         attackFrames = Int(0.020 * sampleRate)
         holdFrames = Int(0.025 * sampleRate)
         smoothStep = 1 - exp(-1 / (sampleRate * 0.008))
-        deepA = Biquad(rate: sampleRate, frequency: 65, q: 0.5411961)
-        deepB = Biquad(rate: sampleRate, frequency: 65, q: 1.306563)
+        deep = ButterworthLowPass(rate: sampleRate, frequency: 65)
     }
-
-    /// Feel the level as heard: turning the volume down makes the haptics weaker too.
-    public var followsVolume = false
 
     /// Starts the detectors over after a gap in the audio, keeping the loudness reference, so a glitch
     /// doesn't jump straight to full boost.
     public mutating func reset() {
-        let sensitivity = detector.sensitivity
-        envelope = BassEnvelope(sampleRate: sampleRate)!
-        detector = BeatDetector(sampleRate: sampleRate)
-        detector.sensitivity = sensitivity
-        pitch = BassPitchTracker(sampleRate: sampleRate)
-        voice = VoiceGate(hopSeconds: Self.hopSeconds)
-        habituation = Habituation()
-        hopPower = 0
-        smoothBass = 0
-        hopBass = 0
-        hopDeep = 0
-        hopFull = 0
-        speech = 1
-        deepA = Biquad(rate: sampleRate, frequency: 65, q: 0.5411961)
-        deepB = Biquad(rate: sampleRate, frequency: 65, q: 1.306563)
-        inHop = 0
-        onset = nil
-        pending = nil
-        decided = nil
-        warmupHops = Self.warmupHops
+        let (loudness, followsVolume) = (self.loudness, self.followsVolume)
+        self = HapticAnalyzer(sampleRate: sampleRate, sensitivity: sensitivity)!
+        self.loudness = loudness
+        self.followsVolume = followsVolume
     }
-
-    private static let warmupHops = 6 // 30 ms
 
     public var sensitivity: BeatDetector.Sensitivity {
         get { detector.sensitivity }
@@ -128,8 +109,8 @@ public struct HapticAnalyzer: Sendable {
             pitch.push(Double(left + right) * 0.5)
             smoothBass += (envelope.bassLevel - smoothBass) * smoothStep
             hopBass += envelope.instantBass
-            let deep = deepB.push(deepA.push(Double(left + right) * 0.5))
-            hopDeep += deep * deep
+            let low = deep.push(Double(left + right) * 0.5)
+            hopDeep += low * low
             hopFull += Double(left * left + right * right) * 0.5
             // A kick carries real bass: the detector's band share and the envelope's bass-ratio gate reject
             // snare, hat, and melody attacks.
@@ -154,8 +135,8 @@ public struct HapticAnalyzer: Sendable {
             hopFull = 0
             if pending != nil { decide() }
             land()
-            if warmupHops > 0 {
-                warmupHops -= 1
+            if warmupLeft > 0 {
+                warmupLeft -= 1
                 onset = nil
                 pending = nil
             }

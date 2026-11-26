@@ -5,8 +5,7 @@ import Foundation
 struct BassPitchTracker: Sendable {
     private let sampleRate: Double
     private var high: Biquad
-    private var lowA: Biquad
-    private var lowB: Biquad
+    private var low: ButterworthLowPass
     private let powerStep: Double
     private let shortestPeriod: Double
     private let longestPeriod: Double
@@ -25,8 +24,7 @@ struct BassPitchTracker: Sendable {
     init(sampleRate: Double) {
         self.sampleRate = sampleRate
         high = Biquad(rate: sampleRate, frequency: 35, q: 1 / sqrt(2), highPass: true)
-        lowA = Biquad(rate: sampleRate, frequency: 180, q: 0.5411961)
-        lowB = Biquad(rate: sampleRate, frequency: 180, q: 1.306563)
+        low = ButterworthLowPass(rate: sampleRate, frequency: 180)
         powerStep = 1 - exp(-1 / (sampleRate * 0.020))
         shortestPeriod = sampleRate / 320
         longestPeriod = sampleRate / 35
@@ -44,7 +42,7 @@ struct BassPitchTracker: Sendable {
     static let recentCount = 6
 
     mutating func push(_ sample: Double) {
-        let value = lowB.push(lowA.push(high.push(sample)))
+        let value = low.push(high.push(sample))
         frame += 1
         power += powerStep * (value * value - power)
         sinceCrossing += 1

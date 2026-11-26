@@ -27,3 +27,16 @@ struct Biquad: Sendable {
         return result
     }
 }
+
+/// Fourth-order Butterworth low-pass: two sections, flat to `frequency` and falling 24 dB an octave above it.
+struct ButterworthLowPass: Sendable {
+    private var first: Biquad
+    private var second: Biquad
+
+    init(rate: Double, frequency: Double) {
+        first = Biquad(rate: rate, frequency: frequency, q: 0.5411961)
+        second = Biquad(rate: rate, frequency: frequency, q: 1.306563)
+    }
+
+    mutating func push(_ sample: Double) -> Double { second.push(first.push(sample)) }
+}
