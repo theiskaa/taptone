@@ -1,5 +1,5 @@
 // Draws Taptone's app icon (App/AppIcon.icns) and logo (assets/logo.svg, assets/icon.png) from one set of shapes.
-// The mark is the menu bar glyph (Sources/Taptone/TouchIcon.swift) scaled up: a trackpad outline with the
+// The mark is the menu bar glyph (Sources/Taptone/Menu/TouchIcon.swift) scaled up: a trackpad outline with the
 // sound wave inside, in white on a pine tile.
 //
 //     swift scripts/make-brand.swift
