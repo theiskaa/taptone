@@ -1,6 +1,7 @@
 import Darwin
 
-/// The Core Audio host clock (mach absolute time) in nanoseconds, matching capture timestamps.
+/// The Core Audio host clock (mach absolute time) in nanoseconds: the clock of capture timestamps, cues,
+/// and the motor, shared by every part of Taptone.
 public enum HostClock {
     private static let timebase: mach_timebase_info_data_t = {
         var info = mach_timebase_info_data_t()

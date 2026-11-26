@@ -2,6 +2,9 @@ import AudioListener
 import CoreAudio
 import Foundation
 import OSLog
+import TaptoneCore
+
+private let log = Logger(category: "CoreAudio")
 
 struct CaptureFailure: LocalizedError {
     let errorDescription: String?
@@ -20,7 +23,7 @@ struct CaptureFailure: LocalizedError {
         }
         let bytes = (0..<4).reversed().map { UInt8(truncatingIfNeeded: UInt32(bitPattern: status) >> ($0 * 8)) }
         let code = bytes.allSatisfy { (33...126).contains($0) } ? String(decoding: bytes, as: UTF8.self) : String(status)
-        Logger(subsystem: "com.theiskaa.taptone", category: "CoreAudio").error("Couldn’t \(operation, privacy: .public): \(code, privacy: .public)")
+        log.error("Couldn’t \(operation, privacy: .public): \(code, privacy: .public)")
         throw Self("Taptone couldn’t start listening. Try again, or restart your Mac if it keeps happening.")
     }
 }
@@ -39,8 +42,6 @@ final class SystemAudioTap: @unchecked Sendable {
     /// macOS alert sounds: they'd otherwise land as kicks.
     private static let alertSounds = "systemsoundserverd"
     private var teardown = CaptureTeardown()
-    private static let system = AudioObjectID(kAudioObjectSystemObject)
-    private static let logger = Logger(subsystem: "com.theiskaa.taptone", category: "CoreAudio")
 
     init(hal: CaptureHAL = CaptureHAL()) throws {
         guard let mailbox = TapMailbox() else { throw CaptureFailure("Couldn’t allocate the audio buffer.") }
@@ -88,19 +89,19 @@ final class SystemAudioTap: @unchecked Sendable {
         teardown.acquired("destroy aggregate device") { [release = hal.destroyAggregate] in release(aggregate) }
 
         var io: AudioDeviceIOProcID?
-        _ = Self.hostTimeNs() // Warm up the clock conversion before using it in the callback.
+        _ = HostClock.nowNs() // Warm up the clock conversion before using it in the callback.
         try CaptureFailure.check(hal.createIO(&io, aggregate, nil) { [mailbox] now, input, inputTime, _, _ in
             let stamp = inputTime.pointee
             let host = stamp.mFlags.contains(.hostTimeValid) && stamp.mHostTime != 0 ? stamp.mHostTime : now.pointee.mHostTime
-            mailbox.write(input, hostTimeNs: host == 0 ? Self.hostTimeNs() : AudioConvertHostTimeToNanos(host))
+            mailbox.write(input, hostTimeNs: host == 0 ? HostClock.nowNs() : AudioConvertHostTimeToNanos(host))
         }, "attach the audio callback")
 
         guard let io else { throw CaptureFailure("The audio callback wasn’t created.") }
         teardown.acquired("remove audio callback") { [release = hal.destroyIO] in release(aggregate, io) }
 
-        try listen(Self.system, kAudioHardwarePropertyDefaultOutputDevice, queue: queue, callback: onRouteChange)
+        try listen(AudioProperty.system, kAudioHardwarePropertyDefaultOutputDevice, queue: queue, callback: onRouteChange)
         // coreaudiod restarted: the tap and capture device are gone, so start over at once.
-        try listen(Self.system, kAudioHardwarePropertyServiceRestarted, queue: queue, callback: onRouteChange)
+        try listen(AudioProperty.system, kAudioHardwarePropertyServiceRestarted, queue: queue, callback: onRouteChange)
         // Changing the ignored apps also notifies the format; only a real change means a new output.
         try listen(tap, kAudioTapPropertyFormat, queue: queue) { [weak self] in
             guard let self, let current = try? self.readFormat(tap),
@@ -108,7 +109,7 @@ final class SystemAudioTap: @unchecked Sendable {
             onRouteChange()
         }
         // An ignored app that starts playing later has no audio process yet, so add it when it appears.
-        try listen(Self.system, kAudioHardwarePropertyProcessObjectList, queue: queue) { [weak self] in
+        try listen(AudioProperty.system, kAudioHardwarePropertyProcessObjectList, queue: queue) { [weak self] in
             self?.applyIgnored()
         }
         prepared = (aggregate, io)
@@ -126,12 +127,12 @@ final class SystemAudioTap: @unchecked Sendable {
         tap.description.processes = processes
         // The property holds a reference to the description object.
         var description = Unmanaged.passUnretained(tap.description).toOpaque()
-        var address = Self.address(kAudioTapPropertyDescription)
+        var address = AudioProperty.address(kAudioTapPropertyDescription)
         let status = withExtendedLifetime(tap.description) {
             hal.writeProperty(tap.id, &address, 0, nil, UInt32(MemoryLayout.size(ofValue: description)), &description)
         }
         // Remember only what took, so the next change tries again.
-        if status == noErr { ignoredProcesses = processes } else { Self.logger.error("Couldn’t update the ignored apps: \(status)") }
+        if status == noErr { ignoredProcesses = processes } else { log.error("Couldn’t update the ignored apps: \(status)") }
     }
 
     /// Taptone itself, alert sounds, and the ignored apps' audio processes.
@@ -167,7 +168,7 @@ final class SystemAudioTap: @unchecked Sendable {
         sampleRate = 0
         let issues = teardown.run()
         for issue in issues {
-            Self.logger.error("Couldn’t \(issue.operation, privacy: .public): \(issue.status)")
+            log.error("Couldn’t \(issue.operation, privacy: .public): \(issue.status)")
         }
         return issues
     }
@@ -175,7 +176,7 @@ final class SystemAudioTap: @unchecked Sendable {
     private func readFormat(_ tap: AudioObjectID) throws -> AudioStreamBasicDescription {
         var format = AudioStreamBasicDescription()
         var size = UInt32(MemoryLayout.size(ofValue: format))
-        var address = Self.address(kAudioTapPropertyFormat)
+        var address = AudioProperty.address(kAudioTapPropertyFormat)
         try CaptureFailure.check(hal.readProperty(tap, &address, 0, nil, &size, &format), "read the tap format")
         return format
     }
@@ -183,7 +184,7 @@ final class SystemAudioTap: @unchecked Sendable {
     private func tapUID(_ tap: AudioObjectID) throws -> String {
         var uid: Unmanaged<CFString>?
         var size = UInt32(MemoryLayout.size(ofValue: uid))
-        var address = Self.address(kAudioTapPropertyUID)
+        var address = AudioProperty.address(kAudioTapPropertyUID)
         try CaptureFailure.check(hal.readProperty(tap, &address, 0, nil, &size, &uid), "read the tap identifier")
         guard let uid else { throw CaptureFailure("The system audio tap returned no identifier.") }
         return uid.takeRetainedValue() as String
@@ -191,10 +192,10 @@ final class SystemAudioTap: @unchecked Sendable {
 
     private func processes() -> [AudioObjectID] {
         var size: UInt32 = 0
-        var address = Self.address(kAudioHardwarePropertyProcessObjectList)
-        guard hal.propertySize(Self.system, &address, 0, nil, &size) == noErr, size > 0 else { return [] }
+        var address = AudioProperty.address(kAudioHardwarePropertyProcessObjectList)
+        guard hal.propertySize(AudioProperty.system, &address, 0, nil, &size) == noErr, size > 0 else { return [] }
         var processes = [AudioObjectID](repeating: kAudioObjectUnknown, count: Int(size) / MemoryLayout<AudioObjectID>.size)
-        guard hal.readProperty(Self.system, &address, 0, nil, &size, &processes) == noErr else { return [] }
+        guard hal.readProperty(AudioProperty.system, &address, 0, nil, &size, &processes) == noErr else { return [] }
         return Array(processes.prefix(Int(size) / MemoryLayout<AudioObjectID>.size))
     }
 
@@ -205,14 +206,14 @@ final class SystemAudioTap: @unchecked Sendable {
     private func bundleID(of process: AudioObjectID) -> String? {
         var value: Unmanaged<CFString>?
         var size = UInt32(MemoryLayout.size(ofValue: value))
-        var address = Self.address(kAudioProcessPropertyBundleID)
+        var address = AudioProperty.address(kAudioProcessPropertyBundleID)
         guard hal.readProperty(process, &address, 0, nil, &size, &value) == noErr, let value else { return nil }
         let id = value.takeRetainedValue() as String
         return id.isEmpty ? nil : id
     }
 
     private func read<Value>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector, as _: Value.Type) -> Value? {
-        var address = Self.address(selector)
+        var address = AudioProperty.address(selector)
         var size = UInt32(MemoryLayout<Value>.size)
         let value = UnsafeMutableRawPointer.allocate(byteCount: MemoryLayout<Value>.size, alignment: MemoryLayout<Value>.alignment)
         defer { value.deallocate() }
@@ -223,18 +224,11 @@ final class SystemAudioTap: @unchecked Sendable {
 
     private func listen(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
                         queue: DispatchQueue, callback: @escaping @Sendable () -> Void) throws {
-        let address = Self.address(selector)
+        let address = AudioProperty.address(selector)
         let listener = TTAudioListener(handler: callback)
         try CaptureFailure.check(hal.addListener(object, address, queue, listener), "watch for audio output changes")
         teardown.acquired("remove route listener") { [release = hal.removeListener] in
             release(object, address, queue, listener)
         }
-    }
-
-    static func hostTimeNs() -> UInt64 { AudioConvertHostTimeToNanos(AudioGetCurrentHostTime()) }
-
-    private static func address(_ selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
-        AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
-                                   mElement: kAudioObjectPropertyElementMain)
     }
 }

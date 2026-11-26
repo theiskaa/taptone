@@ -1,12 +1,13 @@
 import AppKit
 import OSLog
+import TaptoneCore
 
 /// Offers to move Taptone into Applications when it runs from Downloads, or from the read-only copy
 /// macOS makes of an app opened straight out of a download. From there, Open at login breaks as soon
 /// as the app is moved.
 @MainActor
 enum AppMover {
-    private static let log = Logger(subsystem: "com.theiskaa.taptone", category: "AppMover")
+    private static let log = Logger(category: "AppMover")
 
     /// Returns true when Taptone is moving and about to relaunch, so launch should go no further.
     static func offerIfNeeded(_ settings: Settings) -> Bool {

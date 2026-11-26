@@ -26,19 +26,14 @@ public struct OutputDevice: Sendable {
     public let latencyNs: UInt64
 
     public static func current() -> OutputDevice? {
-        guard let device = read(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultOutputDevice,
-                                scope: kAudioObjectPropertyScopeGlobal, as: AudioObjectID.self),
-              device != kAudioObjectUnknown,
+        guard let device = AudioProperty.defaultDevice(kAudioHardwarePropertyDefaultOutputDevice),
               let rate = read(device, kAudioDevicePropertyNominalSampleRate, as: Float64.self),
               rate.isFinite, rate > 0 else { return nil }
         let frames = [kAudioDevicePropertyLatency, kAudioDevicePropertySafetyOffset]
             .map { Double(read(device, $0, as: UInt32.self) ?? 0) }
             .reduce(0, +) + Double(firstStreamLatency(device) ?? 0)
-        let name = read(device, kAudioObjectPropertyName, scope: kAudioObjectPropertyScopeGlobal,
-                        as: Unmanaged<CFString>?.self)??.takeRetainedValue() as String?
-        return OutputDevice(name: name ?? "Unknown output",
-                            connection: connection(read(device, kAudioDevicePropertyTransportType,
-                                                        scope: kAudioObjectPropertyScopeGlobal, as: UInt32.self)),
+        return OutputDevice(name: AudioProperty.string(device, kAudioObjectPropertyName) ?? "Unknown output",
+                            connection: connection(AudioProperty.read(device, kAudioDevicePropertyTransportType, as: UInt32.self)),
                             latencyNs: min(maximumLatencyNs, UInt64(frames / rate * 1_000_000_000)))
     }
 
@@ -54,27 +49,13 @@ public struct OutputDevice: Sendable {
     }
 
     private static func firstStreamLatency(_ device: AudioObjectID) -> UInt32? {
-        var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams,
-                                                 mScope: kAudioObjectPropertyScopeOutput,
-                                                 mElement: kAudioObjectPropertyElementMain)
-        var size: UInt32 = 0
-        guard AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size) == noErr,
-              size >= UInt32(MemoryLayout<AudioObjectID>.size) else { return nil }
-        var streams = [AudioObjectID](repeating: kAudioObjectUnknown, count: Int(size) / MemoryLayout<AudioObjectID>.size)
-        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &streams) == noErr,
-              let stream = streams.first(where: { $0 != kAudioObjectUnknown }) else { return nil }
-        return read(stream, kAudioStreamPropertyLatency, scope: kAudioObjectPropertyScopeGlobal, as: UInt32.self)
+        guard let stream = AudioProperty.objects(device, kAudioDevicePropertyStreams, scope: kAudioObjectPropertyScopeOutput)
+            .first(where: { $0 != kAudioObjectUnknown }) else { return nil }
+        return AudioProperty.read(stream, kAudioStreamPropertyLatency, as: UInt32.self)
     }
 
-    private static func read<Value>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
-                                    scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeOutput,
-                                    as _: Value.Type) -> Value? {
-        var address = AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
-        var size = UInt32(MemoryLayout<Value>.size)
-        let value = UnsafeMutableRawPointer.allocate(byteCount: MemoryLayout<Value>.size, alignment: MemoryLayout<Value>.alignment)
-        defer { value.deallocate() }
-        guard AudioObjectGetPropertyData(object, &address, 0, nil, &size, value) == noErr,
-              size == UInt32(MemoryLayout<Value>.size) else { return nil }
-        return value.load(as: Value.self)
+    /// The output side of the device, where latency and sample rate are read.
+    private static func read<Value>(_ device: AudioObjectID, _ selector: AudioObjectPropertySelector, as type: Value.Type) -> Value? {
+        AudioProperty.read(device, selector, scope: kAudioObjectPropertyScopeOutput, as: type)
     }
 }

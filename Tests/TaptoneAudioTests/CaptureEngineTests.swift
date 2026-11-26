@@ -2,6 +2,7 @@ import CoreAudio
 import Foundation
 import os
 @testable import TaptoneAudio
+import TaptoneCore
 import Testing
 
 @Suite struct CaptureEngineTests {
@@ -280,7 +281,7 @@ import Testing
         let packets = OSAllocatedUnfairLock<[CapturePCM]>(initialState: [])
         let engine = CaptureEngine {
             try TestTap(start: { mailbox in
-                let now = CaptureEngine.now()
+                let now = HostClock.nowNs()
                 writeSilence(to: mailbox, at: now > 1_000_000_000 ? now - 1_000_000_000 : 0)
                 writeSilence(to: mailbox, at: now)
                 writeSilence(to: mailbox, at: now + 11_000_000)
@@ -332,7 +333,7 @@ import Testing
     }
 }
 
-private func writeSilence(to mailbox: TapMailbox, at hostTimeNs: UInt64 = CaptureEngine.now(), value: Float = 0) {
+private func writeSilence(to mailbox: TapMailbox, at hostTimeNs: UInt64 = HostClock.nowNs(), value: Float = 0) {
     var samples = [Float](repeating: value, count: 512)
     samples.withUnsafeMutableBytes { samples in
         var buffer = AudioBufferList(mNumberBuffers: 1, mBuffers: AudioBuffer(

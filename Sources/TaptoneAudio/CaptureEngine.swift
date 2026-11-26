@@ -65,7 +65,7 @@ public final class CaptureEngine: @unchecked Sendable {
     private let diagnostics: Bool
     private let timeouts: Timeouts
     private let makeTap: @Sendable () throws -> any CaptureTap
-    private let log = Logger(subsystem: "com.theiskaa.taptone", category: "Capture")
+    private let log = Logger(category: "Capture")
     private var session: Session?
     private var cleanupIssues: [CaptureCleanupIssue] = []
 
@@ -109,7 +109,7 @@ public final class CaptureEngine: @unchecked Sendable {
                     next.configure(sampleRate: DemoBeat.sampleRate)
                 }
                 guard isRequested(id) else { end(); return }
-                next.startedAt = Self.now()
+                next.startedAt = HostClock.nowNs()
                 let timer = DispatchSource.makeTimerSource(queue: queue)
                 timer.schedule(deadline: .now(), repeating: Self.fastPace, leeway: .milliseconds(1))
                 timer.setEventHandler { [weak self] in self?.tick(id) }
@@ -158,13 +158,11 @@ public final class CaptureEngine: @unchecked Sendable {
         }
     }
 
-    public static func now() -> UInt64 { SystemAudioTap.hostTimeNs() }
-
     private func isRequested(_ id: UUID) -> Bool { requested.withLock { $0 == id } }
 
     private func tick(_ id: UUID) {
         guard let session, session.id == id, isRequested(id) else { return }
-        let now = Self.now()
+        let now = HostClock.nowNs()
         if let tap = session.tap {
             let awaitingFirst = session.lastBufferAt == nil
             session.drain(tap.mailbox, now: now, isCurrent: { isRequested(id) })

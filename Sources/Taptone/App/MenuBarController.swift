@@ -17,7 +17,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
         CommandLine.arguments.contains("--\(name)") || ProcessInfo.processInfo.environment["TAPTONE_\(name.uppercased())"] == "1"
     }
     private lazy var engine = CaptureEngine(diagnostics: diagnostics)
-    private let log = Logger(subsystem: "com.theiskaa.taptone", category: "Session")
+    private let log = Logger(category: "Session")
     private let settings = Settings()
     private let activity = ActivityModel()
     private lazy var surroundings = AudioSurroundings { [weak self] in self?.surroundingsChanged($0) }
@@ -267,7 +267,7 @@ final class MenuBarController: NSObject, NSApplicationDelegate, NSMenuDelegate, 
             activity.hearsOnlySilence = silent
             render()
         case .signal(let level, let beat):
-            let now = CaptureEngine.now()
+            let now = HostClock.nowNs()
             let fresh = beat.flatMap { PulseTiming.isFresh($0, at: now) ? $0 : nil }
             // The demo has no output: its detected kicks go straight to the chart.
             let (kicks, motorLevel) = output?.update(beat: fresh, now: now) ?? (fresh == nil ? 0 : 1, 0)

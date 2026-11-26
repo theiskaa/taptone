@@ -1,5 +1,6 @@
 import AppKit
 import OSLog
+import TaptoneCore
 
 /// Asks GitHub for the latest release. Nothing else is sent, and no cookies or caches are kept.
 @MainActor
@@ -15,7 +16,7 @@ enum UpdateChecker {
 
     static let interval: TimeInterval = 24 * 60 * 60
     private static let latest = URL(string: "https://api.github.com/repos/theiskaa/taptone/releases/latest")!
-    private static let log = Logger(subsystem: "com.theiskaa.taptone", category: "Updates")
+    private static let log = Logger(category: "Updates")
 
     static var currentVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"

@@ -1,6 +1,7 @@
 import AppKit
 import OSLog
 import ServiceManagement
+import TaptoneCore
 
 /// Opening Taptone, and so listening, when you log in.
 @MainActor
@@ -13,7 +14,7 @@ enum LoginItem {
         do {
             if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
         } catch {
-            Logger(subsystem: "com.theiskaa.taptone", category: "LoginItem")
+            Logger(category: "LoginItem")
                 .error("Couldn’t change the login item: \(error.localizedDescription, privacy: .public)")
         }
         // macOS may ask the user to allow it first, in Login Items settings.

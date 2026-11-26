@@ -27,7 +27,6 @@ public final class AudioSurroundings {
     /// Each app's microphone use, by audio process. Kept across process list changes, so only apps
     /// that come or go are touched.
     private var processListeners: [AudioObjectID: Listener] = [:]
-    private static let system = AudioObjectID(kAudioObjectSystemObject)
     /// System services that listen on their own, such as Siri and Sound Recognition: never a call.
     private static let backgroundListeners = ["com.apple.CoreSpeech", "com.apple.corespeechd", "com.apple.assistantd",
                                               "com.apple.accessibility.heard", "com.apple.SiriSetup"]
@@ -35,8 +34,8 @@ public final class AudioSurroundings {
     /// `onChange` runs on the main actor whenever the state changes. Keep one for the app’s lifetime.
     public init(onChange: @escaping (State) -> Void) {
         self.onChange = onChange
-        _ = listen(Self.system, kAudioHardwarePropertyDefaultOutputDevice) { $0.watchOutput() }
-        _ = listen(Self.system, kAudioHardwarePropertyProcessObjectList) { $0.watchProcesses() }
+        _ = listen(AudioProperty.system, kAudioHardwarePropertyDefaultOutputDevice) { $0.watchOutput() }
+        _ = listen(AudioProperty.system, kAudioHardwarePropertyProcessObjectList) { $0.watchProcesses() }
         watchOutput()
         watchProcesses()
     }
@@ -46,7 +45,7 @@ public final class AudioSurroundings {
             AudioObjectRemovePropertyListenerBlock(listener.object, &listener.address, .main, listener.block)
         }
         outputListeners = []
-        if let output = Self.defaultDevice(kAudioHardwarePropertyDefaultOutputDevice) {
+        if let output = AudioProperty.defaultDevice(kAudioHardwarePropertyDefaultOutputDevice) {
             for selector in [kAudioHardwareServiceDeviceProperty_VirtualMainVolume, kAudioDevicePropertyMute] {
                 if let listener = listen(output, selector, scope: kAudioObjectPropertyScopeOutput, { $0.refresh() }) {
                     outputListeners.append(listener)
@@ -67,12 +66,13 @@ public final class AudioSurroundings {
     }
 
     private func refresh() {
-        let output = Self.defaultDevice(kAudioHardwarePropertyDefaultOutputDevice)
+        let output = AudioProperty.defaultDevice(kAudioHardwarePropertyDefaultOutputDevice)
+        let scope = kAudioObjectPropertyScopeOutput
         let next = State(
-            volume: output.flatMap { Self.read($0, kAudioHardwareServiceDeviceProperty_VirtualMainVolume, scope: kAudioObjectPropertyScopeOutput, as: Float32.self) },
-            isMuted: output.flatMap { Self.read($0, kAudioDevicePropertyMute, scope: kAudioObjectPropertyScopeOutput, as: UInt32.self) }.map { $0 != 0 } ?? false,
+            volume: output.flatMap { AudioProperty.read($0, kAudioHardwareServiceDeviceProperty_VirtualMainVolume, scope: scope, as: Float32.self) },
+            isMuted: output.flatMap { AudioProperty.read($0, kAudioDevicePropertyMute, scope: scope, as: UInt32.self) }.map { $0 != 0 } ?? false,
             microphoneInUse: Self.callerCandidates().contains {
-                Self.read($0, kAudioProcessPropertyIsRunningInput, as: UInt32.self).map { $0 != 0 } ?? false
+                AudioProperty.read($0, kAudioProcessPropertyIsRunningInput, as: UInt32.self).map { $0 != 0 } ?? false
             }
         )
         guard next != state else { return }
@@ -83,7 +83,7 @@ public final class AudioSurroundings {
     private func listen(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
                         scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal,
                         _ action: @escaping @MainActor (AudioSurroundings) -> Void) -> Listener? {
-        var address = AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
+        var address = AudioProperty.address(selector, scope: scope)
         guard AudioObjectHasProperty(object, &address) else { return nil }
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             MainActor.assumeIsolated {
@@ -98,43 +98,11 @@ public final class AudioSurroundings {
     /// Every audio process that could be on a call: not Taptone, whose own capture reads input, and
     /// not the system's background listeners.
     private static func callerCandidates() -> [AudioObjectID] {
-        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList,
-                                                 mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-        var size: UInt32 = 0
-        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &size) == noErr, size > 0 else { return [] }
-        var processes = [AudioObjectID](repeating: kAudioObjectUnknown, count: Int(size) / MemoryLayout<AudioObjectID>.size)
-        guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &processes) == noErr else { return [] }
         let ownPID = ProcessInfo.processInfo.processIdentifier
-        return processes.prefix(Int(size) / MemoryLayout<AudioObjectID>.size).filter { process in
-            guard read(process, kAudioProcessPropertyPID, as: pid_t.self) != ownPID else { return false }
-            guard let bundleID = bundleID(of: process) else { return true }
+        return AudioProperty.objects(AudioProperty.system, kAudioHardwarePropertyProcessObjectList).filter { process in
+            guard AudioProperty.read(process, kAudioProcessPropertyPID, as: pid_t.self) != ownPID else { return false }
+            guard let bundleID = AudioProperty.string(process, kAudioProcessPropertyBundleID) else { return true }
             return !backgroundListeners.contains { bundleID.hasPrefix($0) }
         }
-    }
-
-    private static func bundleID(of process: AudioObjectID) -> String? {
-        var address = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyBundleID,
-                                                 mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-        var value: Unmanaged<CFString>?
-        var size = UInt32(MemoryLayout.size(ofValue: value))
-        guard AudioObjectGetPropertyData(process, &address, 0, nil, &size, &value) == noErr, let value else { return nil }
-        return value.takeRetainedValue() as String
-    }
-
-    private static func defaultDevice(_ selector: AudioObjectPropertySelector) -> AudioObjectID? {
-        read(system, selector, as: AudioObjectID.self).flatMap { $0 == kAudioObjectUnknown ? nil : $0 }
-    }
-
-    private static func read<Value>(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
-                                    scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal,
-                                    as _: Value.Type) -> Value? {
-        var address = AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
-        guard AudioObjectHasProperty(object, &address) else { return nil }
-        var size = UInt32(MemoryLayout<Value>.size)
-        let value = UnsafeMutableRawPointer.allocate(byteCount: MemoryLayout<Value>.size, alignment: MemoryLayout<Value>.alignment)
-        defer { value.deallocate() }
-        guard AudioObjectGetPropertyData(object, &address, 0, nil, &size, value) == noErr,
-              size == UInt32(MemoryLayout<Value>.size) else { return nil }
-        return value.load(as: Value.self)
     }
 }
