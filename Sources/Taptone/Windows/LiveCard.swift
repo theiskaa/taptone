@@ -155,8 +155,7 @@ struct LiveCard: View {
     private var carrierHz: Double { activity.live?.carrierHz ?? HapticSynth.restingHz }
 
     private var lastKickNs: UInt64? {
-        if playsMotor { return activity.live?.lastKickNs }
-        return activity.history.samples.last { $0.kicks > 0 }?.timeNs
+        playsMotor ? activity.live?.lastKickNs : activity.history.lastKickNs
     }
 
     private var padDescription: String {

@@ -26,19 +26,13 @@ enum AppMover {
             let destination = try move(source)
             guard relaunch(destination) else {
                 // Moved, but this copy can't open the new one: say where it went instead of vanishing.
-                let moved = NSAlert()
-                moved.messageText = "Taptone is in Applications"
-                moved.informativeText = "Quit this copy and open Taptone from Applications."
-                moved.runModal()
+                NSAlert.inform("Taptone is in Applications", "Quit this copy and open Taptone from Applications.")
                 return false
             }
             return true
         } catch {
             log.error("Couldn’t move to Applications: \(error.localizedDescription, privacy: .public)")
-            let failure = NSAlert()
-            failure.messageText = "Couldn’t move Taptone"
-            failure.informativeText = "Drag Taptone into Applications in Finder, then open it from there."
-            failure.runModal()
+            NSAlert.inform("Couldn’t move Taptone", "Drag Taptone into Applications in Finder, then open it from there.")
             return false
         }
     }

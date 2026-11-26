@@ -17,6 +17,9 @@ public struct ActivityHistory: Sendable {
 
     public init() {}
 
+    /// When the newest kick still on the chart played.
+    public var lastKickNs: UInt64? { samples.last { $0.kicks > 0 }?.timeNs }
+
     public mutating func record(at timeNs: UInt64, levelDBFS: Float, motorLevel: Float = 0, kicks: Int = 0) {
         if let last = samples.last, timeNs < last.timeNs { return }
         let cutoff = timeNs > Self.durationNs ? timeNs - Self.durationNs : 0

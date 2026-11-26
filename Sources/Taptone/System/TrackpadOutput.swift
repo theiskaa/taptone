@@ -17,6 +17,8 @@ final class TrackpadOutput {
     private let voice: MotorVoice?
     private var taps = TapRateLimiter()
     private var isMuted = false
+    /// The player's kick count at the last `update`.
+    private var reportedKicks = 0
 
     init(settings: Settings, surroundings: AudioSurroundings.State, onFailure: @escaping @Sendable () -> Void) {
         device = OutputDevice.current()
@@ -72,8 +74,6 @@ final class TrackpadOutput {
 
     func stop() { voice?.player.stop() }
 
-    private var reportedKicks = 0
-
     private static func tap() {
         NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
     }
@@ -91,14 +91,14 @@ final class TrackpadOutput {
 /// Analysis on the capture worker, playback on the player's thread.
 private final class MotorVoice: Sendable {
     let player: HapticPlayer
-    private struct Settings {
+    private struct Tuning {
         var sensitivity = BeatDetector.Sensitivity.normal
         var followsVolume = false
         /// What the output volume leaves of the signal; 0 while muted.
         var outputGain: Float = 1
     }
     /// Set from the main thread, read once per packet; the analysis itself runs outside the lock.
-    private let settings = OSAllocatedUnfairLock(initialState: Settings())
+    private let tuning = OSAllocatedUnfairLock(initialState: Tuning())
     /// Only touched from `consume`, which the capture worker calls one packet at a time.
     private nonisolated(unsafe) var analyzer: HapticAnalyzer?
 
@@ -112,14 +112,13 @@ private final class MotorVoice: Sendable {
     deinit { player.stop() }
 
     func consume(_ packet: CapturePCM) {
-        let current = settings.withLock { $0 }
+        let current = tuning.withLock { $0 }
         if analyzer?.sampleRate != packet.sampleRate {
             analyzer = HapticAnalyzer(sampleRate: packet.sampleRate, sensitivity: current.sensitivity)
         } else if packet.discontinuity {
             analyzer?.reset()
         }
         // Mutated in place: a copy would duplicate the analyzer's buffers on every packet.
-        guard analyzer != nil else { return }
         if analyzer?.sensitivity != current.sensitivity { analyzer?.sensitivity = current.sensitivity }
         analyzer?.followsVolume = current.followsVolume
         // The tap hears apps before the output volume applies, so apply it here when following it.
@@ -132,13 +131,13 @@ private final class MotorVoice: Sendable {
     }
 
     func configure(sensitivity: BeatDetector.Sensitivity, followsVolume: Bool) {
-        settings.withLock { settings in
-            settings.sensitivity = sensitivity
-            settings.followsVolume = followsVolume
+        tuning.withLock { tuning in
+            tuning.sensitivity = sensitivity
+            tuning.followsVolume = followsVolume
         }
     }
 
     func setOutput(gain: Float) {
-        settings.withLock { $0.outputGain = gain }
+        tuning.withLock { $0.outputGain = gain }
     }
 }

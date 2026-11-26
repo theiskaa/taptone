@@ -104,7 +104,7 @@ final class ActivityModel {
 
     /// 0...1 for drawing without the motor: each kick swells and fades.
     func kickLevel(now: UInt64) -> Double {
-        guard let lastKick = history.samples.last(where: { $0.kicks > 0 })?.timeNs, now >= lastKick else { return 0 }
+        guard let lastKick = history.lastKickNs, now >= lastKick else { return 0 }
         return 0.85 * exp(-Double(now - lastKick) / 1e9 / 0.25)
     }
 

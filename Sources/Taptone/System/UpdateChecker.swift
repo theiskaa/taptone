@@ -33,8 +33,8 @@ enum UpdateChecker {
             let (data, response) = try await URLSession(configuration: .ephemeral).data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { return .failed }
             let release = try JSONDecoder().decode(GitHubRelease.self, from: data)
-            let version = release.tag_name.hasPrefix("v") ? String(release.tag_name.dropFirst()) : release.tag_name
-            guard isNewer(version, than: currentVersion), let page = URL(string: release.html_url) else { return .upToDate }
+            let version = release.tagName.hasPrefix("v") ? String(release.tagName.dropFirst()) : release.tagName
+            guard isNewer(version, than: currentVersion), let page = URL(string: release.page) else { return .upToDate }
             return .available(Release(version: version, page: page))
         } catch {
             log.info("Update check failed: \(error.localizedDescription, privacy: .public)")
@@ -58,7 +58,7 @@ enum UpdateChecker {
         let alert = NSAlert()
         alert.messageText = "Taptone \(release.version) is available"
         alert.informativeText = "You have \(currentVersion). To update, run this in Terminal:\n\n\(installCommand)"
-        alert.addButtons("Copy Command", "What’s New", "Later")
+        for title in ["Copy Command", "What’s New", "Later"] { alert.addButton(withTitle: title) }
         NSApp.activate()
         switch alert.runModal() {
         case .alertFirstButtonReturn:
@@ -72,27 +72,19 @@ enum UpdateChecker {
     }
 
     static func presentUpToDate() {
-        let alert = NSAlert()
-        alert.messageText = "Taptone is up to date"
-        alert.informativeText = "You have the latest version, \(currentVersion)."
-        NSApp.activate()
-        alert.runModal()
+        NSAlert.inform("Taptone is up to date", "You have the latest version, \(currentVersion).")
     }
 
     static func presentFailure() {
-        let alert = NSAlert()
-        alert.messageText = "Couldn’t check for updates"
-        alert.informativeText = "Check your internet connection and try again."
-        NSApp.activate()
-        alert.runModal()
+        NSAlert.inform("Couldn’t check for updates", "Check your internet connection and try again.")
     }
 
     private struct GitHubRelease: Decodable {
-        let tag_name: String
-        let html_url: String
-    }
-}
+        let tagName: String
+        let page: String
 
-private extension NSAlert {
-    func addButtons(_ titles: String...) { titles.forEach { addButton(withTitle: $0) } }
+        enum CodingKeys: String, CodingKey {
+            case tagName = "tag_name", page = "html_url"
+        }
+    }
 }

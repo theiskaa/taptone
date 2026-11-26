@@ -85,7 +85,6 @@ public final class HapticPlayer: @unchecked Sendable {
         if shared.withLock({ state in state.timeline.append(cue); return state.wakeIfWaiting() }) { wake.signal() }
     }
 
-
     public func setIntensity(_ intensity: HapticIntensity) { shared.withLock { $0.intensity = intensity } }
 
     public func setLatency(_ latencyNs: UInt64) { shared.withLock { $0.latencyNs = latencyNs } }
