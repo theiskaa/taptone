@@ -181,27 +181,31 @@ public final class CaptureEngine: @unchecked Sendable {
                 session.playingSince = nil
             } else if now >= session.nextOutputCheck {
                 session.nextOutputCheck = now + timeouts.outputCheckNs
-                if tap.isOutputPlaying {
-                    let since = session.playingSince ?? now
-                    session.playingSince = since
-                    let first = session.lastBufferAt == nil
-                    if now - since >= (first ? timeouts.firstBufferNs : timeouts.stalledStreamNs) {
-                        if first {
-                            fail(id, "Taptone can’t hear system audio. Allow it in Privacy & Security, then try again.",
-                                 needsAccess: true)
-                        } else {
-                            fail(id, "The audio stream stopped.", interrupted: true)
-                        }
-                        return
-                    }
-                } else {
-                    session.playingSince = nil // Nothing is playing, so no audio is expected.
-                }
+                if failIfStalled(session, tap, now: now) { return }
             }
         } else {
             session.generateDemo(now: now)
         }
         if isRequested(id) { session.sendUpdate(now: now) }
+    }
+
+    /// No audio arrives while an app plays: at first, macOS likely withholds it; later, the stream stopped.
+    /// Returns whether that has lasted long enough to fail the session.
+    private func failIfStalled(_ session: Session, _ tap: any CaptureTap, now: UInt64) -> Bool {
+        guard tap.isOutputPlaying else {
+            session.playingSince = nil // Nothing is playing, so no audio is expected.
+            return false
+        }
+        let since = session.playingSince ?? now
+        session.playingSince = since
+        let first = session.lastBufferAt == nil
+        guard now - since >= (first ? timeouts.firstBufferNs : timeouts.stalledStreamNs) else { return false }
+        if first {
+            fail(session.id, "Taptone can’t hear system audio. Allow it in Privacy & Security, then try again.", needsAccess: true)
+        } else {
+            fail(session.id, "The audio stream stopped.", interrupted: true)
+        }
+        return true
     }
 
     private func fail(_ id: UUID, _ message: String, interrupted: Bool = false, needsAccess: Bool = false) {
@@ -240,6 +244,11 @@ protocol CaptureTap: AnyObject {
 extension SystemAudioTap: CaptureTap {}
 
 private final class Session {
+    /// The level reported when nothing was heard since the last update.
+    private static let silentDBFS: Float = -90
+    /// Without a beat, updates go out this often: enough to draw the level.
+    private static let updateSpacingNs: UInt64 = 150_000_000
+
     let id: UUID
     let report: CaptureEngine.Report
     private let consumePCM: CaptureEngine.ConsumePCM?
@@ -262,7 +271,7 @@ private final class Session {
 
     private var sampleRate = 0.0
     private var nsPerFrame = 0.0
-    private var level: Float = -90
+    private var level = Session.silentDBFS
     private var beat: UInt64?
     /// Frames to ignore beats for after a reset: a fresh detector reads bass already playing as a hit.
     private var warmupFrames = 0
@@ -287,7 +296,7 @@ private final class Session {
         detector = BeatDetector(sampleRate: sampleRate)
         detector?.sensitivity = sensitivity
         beat = nil
-        level = -90
+        level = Self.silentDBFS
         warmupFrames = Int(0.030 * sampleRate)
     }
 
@@ -303,12 +312,11 @@ private final class Session {
     }
 
     private func process(_ packet: TTAudioPacket, now: UInt64) -> CapturePCM? {
-        guard let stereo = packet.stereo else { return nil }
+        guard let start = packet.stereo else { return nil }
+        let stereo = UnsafeBufferPointer(start: start, count: 2 * Int(packet.frames))
         lastBufferAt = now
         if firstBufferAt == nil { firstBufferAt = now }
-        if !heardSound {
-            heardSound = UnsafeBufferPointer(start: stereo, count: 2 * Int(packet.frames)).contains { $0 != 0 }
-        }
+        if !heardSound { heardSound = stereo.contains { $0 != 0 } }
         let end = packet.hostTimeNs + UInt64(Double(packet.frames) * nsPerFrame)
         guard end >= now || now - end < PulseTiming.maximumAge else {
             resetDetector()
@@ -329,8 +337,7 @@ private final class Session {
         let gap = packet.discontinuity || missingPCM
         missingPCM = false
         guard consumePCM != nil else { return nil }
-        let samples = Array(UnsafeBufferPointer(start: stereo, count: 2 * Int(packet.frames)))
-        return CapturePCM(stereo: samples, sampleRate: sampleRate, hostTimeNs: packet.hostTimeNs, discontinuity: gap)
+        return CapturePCM(stereo: Array(stereo), sampleRate: sampleRate, hostTimeNs: packet.hostTimeNs, discontinuity: gap)
     }
 
     func generateDemo(now: UInt64) {
@@ -369,9 +376,9 @@ private final class Session {
     /// Reports silence too, while waiting for audio, so the app can show that it's listening.
     func sendUpdate(now: UInt64) {
         if let beat, !PulseTiming.isFresh(beat, at: now) { self.beat = nil }
-        guard beat != nil || lastUpdate.map({ now - $0 >= 150_000_000 }) ?? true else { return }
+        guard beat != nil || lastUpdate.map({ now - $0 >= Self.updateSpacingNs }) ?? true else { return }
         report(.signal(levelDBFS: level, beatTimeNs: beat))
-        level = -90
+        level = Self.silentDBFS
         beat = nil
         lastUpdate = now
     }
